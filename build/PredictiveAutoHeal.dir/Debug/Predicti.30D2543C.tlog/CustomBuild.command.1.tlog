@@ -1,0 +1,10 @@
+^D:\AI_DRIVEN\PREDICTIVEAUTOHEAL\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/AI_Driven/PredictiveAutoHeal -BD:/AI_Driven/PredictiveAutoHeal/build --check-stamp-file D:/AI_Driven/PredictiveAutoHeal/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

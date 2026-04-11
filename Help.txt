@@ -1,0 +1,25 @@
+in CMD
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+cl
+
+powershell
+cmd /c ""C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" && powershell"
+cl
+
+cd D:\AI_Driven\PredictiveAutoHeal
+
+cd D:\AI_Driven\PredictiveAutoHeal
+
+rmdir /s /q build
+mkdir build
+cd build
+cmake ..
+cmake --build .
+
+cd D:\AI_Driven\PredictiveAutoHeal\build\Debug
+
+Debug\PredictiveAutoHeal.exe
+
+python.exe -m pip install --upgrade pip
+
+python ..\train_model.py
