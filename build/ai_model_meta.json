@@ -4,9 +4,9 @@
   "cpu_threshold": 80,
   "mem_threshold": 85,
   "disk_threshold": 10,
-  "label_cutoff": 0.5843267572733064,
-  "rows": 293,
-  "samples": 283,
+  "label_cutoff": 0.589634328358209,
+  "rows": 300,
+  "samples": 290,
   "feature_count": 25,
   "features": [
     "cpu_last",

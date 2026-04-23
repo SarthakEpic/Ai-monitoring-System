@@ -17,11 +17,13 @@
 #include <sstream>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
 
 #include "sqlite3.h"
 
 using namespace std;
 using namespace std::chrono;
+namespace fs = std::filesystem;
 
 // ================= GLOBAL STATE =================
 constexpr size_t HISTORY_SIZE = 30;
@@ -149,7 +151,24 @@ string DequeToJsonArray(const deque<T>& values) {
     return oss.str();
 }
 
+wstring GetExecutableDir() {
+    wchar_t path[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return L".";
+    return fs::path(path).parent_path().wstring();
+}
+
+wstring ResolveExistingPath(const vector<wstring>& candidates) {
+    for (const auto& candidate : candidates) {
+        if (!candidate.empty() && fs::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return candidates.empty() ? L"" : candidates.front();
+}
+
 void WriteRuntimeFeaturesJson(
+    const wstring& outputPath,
     const deque<double>& cpuHist,
     const deque<double>& memHist,
     const deque<double>& diskHist,
@@ -157,7 +176,7 @@ void WriteRuntimeFeaturesJson(
     int memTh,
     int diskTh
 ) {
-    ofstream file("runtime_features.json", ios::trunc);
+    ofstream file(outputPath, ios::trunc);
     if (!file) return;
 
     file << "{\n";
@@ -250,8 +269,34 @@ double ComputeFallbackProbability(double cpu, double mem, double disk, int cpuTh
 }
 
 double ReadModelProbability() {
+    const fs::path exeDir = GetExecutableDir();
+    const wstring scriptPath = ResolveExistingPath({
+        (exeDir / L"predict_model.py").wstring(),
+        (exeDir.parent_path() / L"predict_model.py").wstring(),
+        (exeDir.parent_path().parent_path() / L"predict_model.py").wstring(),
+        L"predict_model.py",
+        L"..\\predict_model.py",
+        L"..\\..\\predict_model.py",
+    });
+    const wstring modelPath = ResolveExistingPath({
+        (exeDir / L"ai_model.joblib").wstring(),
+        (exeDir.parent_path() / L"ai_model.joblib").wstring(),
+        (exeDir.parent_path().parent_path() / L"ai_model.joblib").wstring(),
+        L"ai_model.joblib",
+        L"..\\ai_model.joblib",
+    });
+    const wstring inputPath = ResolveExistingPath({
+        (exeDir / L"runtime_features.json").wstring(),
+        (exeDir.parent_path() / L"runtime_features.json").wstring(),
+        L"runtime_features.json",
+    });
+    const wstring outputPath = (exeDir / L"ai_prediction.txt").wstring();
+
     const wstring command =
-        L"cmd /C python ..\\predict_model.py --input runtime_features.json --model ai_model.joblib > ai_prediction.txt";
+        L"cmd /C python \"" + scriptPath +
+        L"\" --input \"" + inputPath +
+        L"\" --model \"" + modelPath +
+        L"\" > \"" + outputPath + L"\"";
 
     vector<wchar_t> cmdBuffer(command.begin(), command.end());
     cmdBuffer.push_back(L'\0');
@@ -281,11 +326,11 @@ double ReadModelProbability() {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
-    ifstream file("ai_prediction.txt");
+    ifstream file(outputPath);
     string text;
     getline(file, text);
 
-    DeleteFileW(L"ai_prediction.txt");
+    DeleteFileW(outputPath.c_str());
 
     text = Trim(text);
     try {
@@ -451,31 +496,6 @@ void DrawInsightPanel(HDC hdc, const RECT& rc,
     DrawTextAt(hdc, rc.left + 16, rc.top + 516, "DISK  " + to_string((int)disk) + "%", RGB(170, 180, 195), gFontSmall);
 }
 
-#include <cstdlib>
-#include <iostream>
-
-double GetAIResult(double cpu, double mem, double disk) {
-    std::string command =
-        "python predict.py " +
-        std::to_string(cpu) + " " +
-        std::to_string(mem) + " " +
-        std::to_string(disk);
-
-    FILE* pipe = _popen(command.c_str(), "r");
-    if (!pipe) return -1;
-
-    char buffer[128];
-    std::string result = "";
-
-    while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
-        result += buffer;
-    }
-
-    _pclose(pipe);
-
-    return atof(result.c_str());
-}
-
 // ================= MONITOR THREAD =================
 void MonitorThread(HWND hwnd) {
     CpuTimes prev{}, curr{};
@@ -484,6 +504,7 @@ void MonitorThread(HWND hwnd) {
     int cpuTh = GetInt("CPU_THRESHOLD", 80);
     int memTh = GetInt("MEM_THRESHOLD", 85);
     int diskTh = GetInt("DISK_THRESHOLD", 10);
+    const wstring runtimeFeaturesPath = (fs::path(GetExecutableDir()) / L"runtime_features.json").wstring();
 
     bool lastAlert = false;
 
@@ -520,7 +541,7 @@ void MonitorThread(HWND hwnd) {
         }
 
         LogToDB(cpu, mem, disk);
-        WriteRuntimeFeaturesJson(cpuCopy, memCopy, diskCopy, cpuTh, memTh, diskTh);
+        WriteRuntimeFeaturesJson(runtimeFeaturesPath, cpuCopy, memCopy, diskCopy, cpuTh, memTh, diskTh);
 
         double modelProb = -1.0;
         if ((g_tick % AI_PREDICT_INTERVAL_TICKS) == 0 || g_aiSource == "WARMING UP") {
@@ -534,10 +555,8 @@ void MonitorThread(HWND hwnd) {
                 g_aiProb = modelProb;
                 g_aiSource = "MODEL";
             } else {
-                if (g_aiSource != "MODEL") {
-                    g_aiProb = ComputeFallbackProbability(cpu, mem, disk, cpuTh, memTh, diskTh);
-                    g_aiSource = "FALLBACK";
-                }
+                g_aiProb = ComputeFallbackProbability(cpu, mem, disk, cpuTh, memTh, diskTh);
+                g_aiSource = "FALLBACK";
             }
 
             aiProbLocal = g_aiProb;
