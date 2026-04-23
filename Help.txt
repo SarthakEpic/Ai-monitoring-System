@@ -23,3 +23,13 @@ Debug\PredictiveAutoHeal.exe
 python.exe -m pip install --upgrade pip
 
 python ..\train_model.py
+
+//to train model
+python train_model.py --db build\monitor.db --model build\ai_model.joblib --meta build\ai_model_meta.json
+
+//alert tuning in config.txt
+AI_ALERT_THRESHOLD=65
+AI_ALERT_CLEAR_THRESHOLD=55
+AI_ALERT_TRIGGER_STREAK=3
+AI_ALERT_CLEAR_STREAK=3
+AI_PREDICT_INTERVAL_TICKS=2

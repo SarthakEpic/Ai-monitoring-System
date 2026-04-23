@@ -28,8 +28,13 @@ namespace fs = std::filesystem;
 // ================= GLOBAL STATE =================
 constexpr size_t HISTORY_SIZE = 30;
 constexpr size_t AI_WINDOW = 8;
-constexpr int AI_PREDICT_INTERVAL_TICKS = 2;
-constexpr double AI_ALERT_THRESHOLD = 65.0;
+constexpr int DEFAULT_AI_PREDICT_INTERVAL_TICKS = 2;
+constexpr double DEFAULT_AI_ALERT_THRESHOLD = 65.0;
+constexpr double DEFAULT_AI_ALERT_CLEAR_THRESHOLD = 55.0;
+constexpr int DEFAULT_AI_ALERT_TRIGGER_STREAK = 3;
+constexpr int DEFAULT_AI_ALERT_CLEAR_STREAK = 3;
+constexpr int AI_MODEL_RETRY_COUNT = 2;
+constexpr int AI_MODEL_RETRY_DELAY_MS = 60;
 
 double g_cpu = 0.0;
 double g_mem = 0.0;
@@ -82,6 +87,17 @@ int GetInt(const string& key, int def) {
         auto it = config.find(key);
         if (it != config.end() && !it->second.empty()) {
             return stoi(it->second);
+        }
+    } catch (...) {
+    }
+    return def;
+}
+
+double GetDouble(const string& key, double def) {
+    try {
+        auto it = config.find(key);
+        if (it != config.end() && !it->second.empty()) {
+            return stod(it->second);
         }
     } catch (...) {
     }
@@ -176,7 +192,8 @@ void WriteRuntimeFeaturesJson(
     int memTh,
     int diskTh
 ) {
-    ofstream file(outputPath, ios::trunc);
+    const wstring tempPath = outputPath + L".tmp";
+    ofstream file(tempPath, ios::trunc);
     if (!file) return;
 
     file << "{\n";
@@ -188,6 +205,11 @@ void WriteRuntimeFeaturesJson(
     file << "  \"mem_history\": " << DequeToJsonArray(memHist) << ",\n";
     file << "  \"disk_history\": " << DequeToJsonArray(diskHist) << "\n";
     file << "}\n";
+    file.close();
+
+    if (!MoveFileExW(tempPath.c_str(), outputPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tempPath.c_str());
+    }
 }
 
 // ================= ALERT =================
@@ -323,8 +345,15 @@ double ReadModelProbability() {
     if (!ok) return -1.0;
 
     WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+
+    if (exitCode != 0) {
+        DeleteFileW(outputPath.c_str());
+        return -1.0;
+    }
 
     ifstream file(outputPath);
     string text;
@@ -340,6 +369,18 @@ double ReadModelProbability() {
     } catch (...) {
         return -1.0;
     }
+}
+
+double ReadModelProbabilityWithRetry() {
+    for (int attempt = 0; attempt < AI_MODEL_RETRY_COUNT; ++attempt) {
+        double prob = ReadModelProbability();
+        if (prob >= 0.0) return prob;
+
+        if (attempt + 1 < AI_MODEL_RETRY_COUNT) {
+            this_thread::sleep_for(milliseconds(AI_MODEL_RETRY_DELAY_MS));
+        }
+    }
+    return -1.0;
 }
 
 // ================= DRAW HELPERS =================
@@ -466,7 +507,8 @@ void DrawInsightPanel(HDC hdc, const RECT& rc,
                       double cpu, double mem, double disk,
                       double aiProb, const string& source,
                       bool alertNow,
-                      int cpuTh, int memTh, int diskTh) {
+                      int cpuTh, int memTh, int diskTh,
+                      double aiAlertTh) {
     COLORREF bg = alertNow ? RGB(64, 24, 32) : RGB(20, 26, 36);
     COLORREF border = alertNow ? RGB(231, 76, 60) : RGB(62, 76, 94);
     DrawRoundedPanel(hdc, rc, bg, border, 24);
@@ -489,6 +531,7 @@ void DrawInsightPanel(HDC hdc, const RECT& rc,
     DrawTextAt(hdc, rc.left + 16, rc.top + 332, "CPU   " + to_string(cpuTh) + "%", RGB(170, 180, 195), gFontSmall);
     DrawTextAt(hdc, rc.left + 16, rc.top + 358, "MEM   " + to_string(memTh) + "%", RGB(170, 180, 195), gFontSmall);
     DrawTextAt(hdc, rc.left + 16, rc.top + 384, "DISK  " + to_string(diskTh) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 410, "AI    " + to_string((int)aiAlertTh) + "%", RGB(170, 180, 195), gFontSmall);
 
     DrawTextAt(hdc, rc.left + 16, rc.top + 432, "Current Values", RGB(230, 235, 245), gFontSection);
     DrawTextAt(hdc, rc.left + 16, rc.top + 464, "CPU   " + to_string((int)cpu) + "%", RGB(170, 180, 195), gFontSmall);
@@ -504,9 +547,17 @@ void MonitorThread(HWND hwnd) {
     int cpuTh = GetInt("CPU_THRESHOLD", 80);
     int memTh = GetInt("MEM_THRESHOLD", 85);
     int diskTh = GetInt("DISK_THRESHOLD", 10);
+    int aiPredictIntervalTicks = max(1, GetInt("AI_PREDICT_INTERVAL_TICKS", DEFAULT_AI_PREDICT_INTERVAL_TICKS));
+    double aiAlertThreshold = ClampDouble(GetDouble("AI_ALERT_THRESHOLD", DEFAULT_AI_ALERT_THRESHOLD), 0.0, 100.0);
+    double aiAlertClearThreshold = ClampDouble(GetDouble("AI_ALERT_CLEAR_THRESHOLD", DEFAULT_AI_ALERT_CLEAR_THRESHOLD), 0.0, aiAlertThreshold);
+    int aiAlertTriggerStreak = max(1, GetInt("AI_ALERT_TRIGGER_STREAK", DEFAULT_AI_ALERT_TRIGGER_STREAK));
+    int aiAlertClearStreak = max(1, GetInt("AI_ALERT_CLEAR_STREAK", DEFAULT_AI_ALERT_CLEAR_STREAK));
     const wstring runtimeFeaturesPath = (fs::path(GetExecutableDir()) / L"runtime_features.json").wstring();
 
     bool lastAlert = false;
+    bool alertState = false;
+    int highRiskStreak = 0;
+    int lowRiskStreak = 0;
 
     while (true) {
         this_thread::sleep_for(seconds(1));
@@ -544,14 +595,22 @@ void MonitorThread(HWND hwnd) {
         WriteRuntimeFeaturesJson(runtimeFeaturesPath, cpuCopy, memCopy, diskCopy, cpuTh, memTh, diskTh);
 
         double modelProb = -1.0;
-        if ((g_tick % AI_PREDICT_INTERVAL_TICKS) == 0 || g_aiSource == "WARMING UP") {
-            modelProb = ReadModelProbability();
+        const bool hasModelWindow =
+            cpuCopy.size() >= AI_WINDOW &&
+            memCopy.size() >= AI_WINDOW &&
+            diskCopy.size() >= AI_WINDOW;
+
+        if (hasModelWindow && ((g_tick % aiPredictIntervalTicks) == 0 || g_aiSource == "WARMING UP")) {
+            modelProb = ReadModelProbabilityWithRetry();
         }
 
         {
             lock_guard<mutex> lock(g_dataMutex);
 
-            if (modelProb >= 0.0) {
+            if (!hasModelWindow) {
+                g_aiProb = ComputeFallbackProbability(cpu, mem, disk, cpuTh, memTh, diskTh);
+                g_aiSource = "WARMING UP";
+            } else if (modelProb >= 0.0) {
                 g_aiProb = modelProb;
                 g_aiSource = "MODEL";
             } else {
@@ -559,9 +618,28 @@ void MonitorThread(HWND hwnd) {
                 g_aiSource = "FALLBACK";
             }
 
+            if (g_aiProb >= aiAlertThreshold) {
+                ++highRiskStreak;
+                lowRiskStreak = 0;
+            } else if (g_aiProb <= aiAlertClearThreshold) {
+                ++lowRiskStreak;
+                highRiskStreak = 0;
+            } else {
+                highRiskStreak = 0;
+                lowRiskStreak = 0;
+            }
+
+            if (!alertState && highRiskStreak >= aiAlertTriggerStreak) {
+                alertState = true;
+                lowRiskStreak = 0;
+            } else if (alertState && lowRiskStreak >= aiAlertClearStreak) {
+                alertState = false;
+                highRiskStreak = 0;
+            }
+
             aiProbLocal = g_aiProb;
             sourceLocal = g_aiSource;
-            alertLocal = (g_aiProb >= AI_ALERT_THRESHOLD);
+            alertLocal = alertState;
             g_alert = alertLocal;
         }
 
@@ -608,6 +686,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         int cpuTh = GetInt("CPU_THRESHOLD", 80);
         int memTh = GetInt("MEM_THRESHOLD", 85);
         int diskTh = GetInt("DISK_THRESHOLD", 10);
+        double aiAlertTh = ClampDouble(GetDouble("AI_ALERT_THRESHOLD", DEFAULT_AI_ALERT_THRESHOLD), 0.0, 100.0);
 
         {
             lock_guard<mutex> lock(g_dataMutex);
@@ -641,6 +720,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawTextAt(memDC, 20, 222, "CPU   " + to_string(cpuTh) + "%", RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 20, 246, "MEM   " + to_string(memTh) + "%", RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 20, 270, "DISK  " + to_string(diskTh) + "%", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 294, "AI    " + to_string((int)aiAlertTh) + "%", RGB(170, 180, 195), gFontSmall);
 
         DrawTextAt(memDC, 20, 334, "Current", RGB(230, 235, 245), gFontSection);
         DrawTextAt(memDC, 20, 366, "CPU   " + to_string((int)cpu) + "%", RGB(170, 180, 195), gFontSmall);
@@ -677,7 +757,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         RECT insightRc{ mainX + graphW + 16, contentTop, client.right - pad, contentTop + graphH };
 
         DrawGraph(memDC, graphRc, cpuHist, memHist, diskHist);
-        DrawInsightPanel(memDC, insightRc, cpu, mem, disk, aiProb, source, alertNow, cpuTh, memTh, diskTh);
+        DrawInsightPanel(memDC, insightRc, cpu, mem, disk, aiProb, source, alertNow, cpuTh, memTh, diskTh, aiAlertTh);
 
         DrawTextAt(memDC, mainX, client.bottom - 16, "Press Ctrl+C in the terminal to stop monitoring", RGB(120, 130, 145), gFontSmall);
 
