@@ -4,6 +4,21 @@
     <ClCompile Include="D:\AI_Driven\PredictiveAutoHeal\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\AI_Driven\PredictiveAutoHeal\AppConfig.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\AI_Driven\PredictiveAutoHeal\DecisionEngine.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\AI_Driven\PredictiveAutoHeal\MetricsPipeline.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\AI_Driven\PredictiveAutoHeal\MetricsStorage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\AI_Driven\PredictiveAutoHeal\SystemMetrics.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\AI_Driven\PredictiveAutoHeal\sqlite3.c">
       <Filter>Source Files</Filter>
     </ClCompile>

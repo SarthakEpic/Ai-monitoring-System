@@ -1,31 +1,30 @@
-#define UNICODE
-#define _UNICODE
-#define NOMINMAX
-
 #include <windows.h>
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <deque>
-#include <thread>
+
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <deque>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <map>
-#include <string>
 #include <mutex>
-#include <algorithm>
 #include <sstream>
-#include <cstdio>
-#include <ctime>
-#include <filesystem>
+#include <string>
+#include <thread>
+#include <vector>
 
-#include "sqlite3.h"
+#include "AppConfig.h"
+#include "DecisionEngine.h"
+#include "MetricsPipeline.h"
+#include "MetricsStorage.h"
+#include "SystemMetrics.h"
 
 using namespace std;
 using namespace std::chrono;
 namespace fs = std::filesystem;
 
-// ================= GLOBAL STATE =================
 constexpr size_t HISTORY_SIZE = 30;
 constexpr size_t AI_WINDOW = 8;
 constexpr int DEFAULT_AI_PREDICT_INTERVAL_TICKS = 2;
@@ -40,13 +39,27 @@ double g_cpu = 0.0;
 double g_mem = 0.0;
 double g_disk = 0.0;
 double g_aiProb = 0.0;
+double g_riskScore = 0.0;
+double g_anomalyScore = 0.0;
+double g_pressureScore = 0.0;
+double g_netDown = 0.0;
+double g_netUp = 0.0;
+double g_topProcessCpu = 0.0;
+double g_topProcessMem = 0.0;
+int g_processCount = 0;
+unsigned long g_topProcessPid = 0;
 
 bool g_alert = false;
 string g_aiSource = "WARMING UP";
+string g_topProcessName = "N/A";
+string g_decisionSummary = "System stable";
+RiskLevel g_decisionLevel = RiskLevel::Normal;
 
 deque<double> g_cpuHist;
 deque<double> g_memHist;
 deque<double> g_diskHist;
+deque<double> g_netHist;
+deque<double> g_processHist;
 
 mutex g_dataMutex;
 
@@ -55,105 +68,13 @@ HFONT gFontSection = NULL;
 HFONT gFontValue = NULL;
 HFONT gFontSmall = NULL;
 
-sqlite3* g_db = nullptr;
-bool g_dbReady = false;
+AppConfig g_config;
+MetricsStorage g_storage;
+MetricsPipeline g_pipeline;
+DecisionEngine g_decisionEngine;
+atomic<bool> g_running = true;
+thread g_monitorThread;
 long long g_tick = 0;
-
-// ================= CONFIG =================
-map<string, string> config;
-
-static string Trim(const string& s) {
-    size_t start = s.find_first_not_of(" \t\r\n");
-    if (start == string::npos) return "";
-    size_t end = s.find_last_not_of(" \t\r\n");
-    return s.substr(start, end - start + 1);
-}
-
-void LoadConfig() {
-    ifstream file("config.txt");
-    string line;
-    while (getline(file, line)) {
-        size_t pos = line.find('=');
-        if (pos != string::npos) {
-            string key = Trim(line.substr(0, pos));
-            string value = Trim(line.substr(pos + 1));
-            if (!key.empty()) config[key] = value;
-        }
-    }
-}
-
-int GetInt(const string& key, int def) {
-    try {
-        auto it = config.find(key);
-        if (it != config.end() && !it->second.empty()) {
-            return stoi(it->second);
-        }
-    } catch (...) {
-    }
-    return def;
-}
-
-double GetDouble(const string& key, double def) {
-    try {
-        auto it = config.find(key);
-        if (it != config.end() && !it->second.empty()) {
-            return stod(it->second);
-        }
-    } catch (...) {
-    }
-    return def;
-}
-
-// ================= LOG / DB =================
-bool InitDB() {
-    if (sqlite3_open("monitor.db", &g_db) != SQLITE_OK) {
-        g_db = nullptr;
-        return false;
-    }
-
-    const char* sql =
-        "CREATE TABLE IF NOT EXISTS metrics ("
-        "time INTEGER, "
-        "cpu REAL, "
-        "mem REAL, "
-        "disk REAL);";
-
-    char* errMsg = nullptr;
-    if (sqlite3_exec(g_db, sql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
-        if (errMsg) sqlite3_free(errMsg);
-        return false;
-    }
-
-    g_dbReady = true;
-    return true;
-}
-
-void CloseDB() {
-    if (g_db) {
-        sqlite3_close(g_db);
-        g_db = nullptr;
-    }
-    g_dbReady = false;
-}
-
-void LogToDB(double cpu, double mem, double disk) {
-    if (!g_dbReady) return;
-
-    const char* sql = "INSERT INTO metrics(time, cpu, mem, disk) VALUES(?1, ?2, ?3, ?4);";
-    sqlite3_stmt* stmt = nullptr;
-
-    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
-    }
-
-    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(time(nullptr)));
-    sqlite3_bind_double(stmt, 2, cpu);
-    sqlite3_bind_double(stmt, 3, mem);
-    sqlite3_bind_double(stmt, 4, disk);
-
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-}
 
 template <typename T>
 string DequeToJsonArray(const deque<T>& values) {
@@ -165,6 +86,56 @@ string DequeToJsonArray(const deque<T>& values) {
     }
     oss << "]";
     return oss.str();
+}
+
+void PushHistory(deque<double>& hist, double value, size_t maxSize) {
+    hist.push_back(value);
+    if (hist.size() > maxSize) hist.pop_front();
+}
+
+double ClampDouble(double value, double lo, double hi) {
+    return max(lo, min(hi, value));
+}
+
+string FormatRate(double kbps) {
+    ostringstream oss;
+    oss << fixed << setprecision(1);
+    if (kbps >= 1024.0) {
+        oss << (kbps / 1024.0) << " MB/s";
+    } else {
+        oss << kbps << " KB/s";
+    }
+    return oss.str();
+}
+
+string ShortenText(const string& text, size_t maxLen) {
+    if (text.size() <= maxLen) return text;
+    if (maxLen <= 3) return text.substr(0, maxLen);
+    return text.substr(0, maxLen - 3) + "...";
+}
+
+COLORREF LevelFillColor(RiskLevel level) {
+    switch (level) {
+    case RiskLevel::Critical:
+        return RGB(64, 24, 32);
+    case RiskLevel::Warning:
+        return RGB(84, 58, 12);
+    case RiskLevel::Normal:
+    default:
+        return RGB(25, 51, 44);
+    }
+}
+
+COLORREF LevelAccentColor(RiskLevel level) {
+    switch (level) {
+    case RiskLevel::Critical:
+        return RGB(231, 76, 60);
+    case RiskLevel::Warning:
+        return RGB(241, 196, 15);
+    case RiskLevel::Normal:
+    default:
+        return RGB(46, 204, 113);
+    }
 }
 
 wstring GetExecutableDir() {
@@ -212,69 +183,9 @@ void WriteRuntimeFeaturesJson(
     }
 }
 
-// ================= ALERT =================
 void ShowAlert(const string& message) {
     MessageBeep(MB_ICONWARNING);
-    MessageBoxA(NULL, message.c_str(), "AI Alert", MB_OK | MB_ICONWARNING);
-}
-
-// ================= SYSTEM METRICS =================
-struct CpuTimes {
-    ULONGLONG idle, kernel, user;
-};
-
-ULONGLONG FileTimeToULL(const FILETIME& ft) {
-    ULARGE_INTEGER ui;
-    ui.LowPart = ft.dwLowDateTime;
-    ui.HighPart = ft.dwHighDateTime;
-    return ui.QuadPart;
-}
-
-bool GetCpuTimes(CpuTimes& t) {
-    FILETIME idle, kernel, user;
-    if (!GetSystemTimes(&idle, &kernel, &user)) return false;
-    t.idle = FileTimeToULL(idle);
-    t.kernel = FileTimeToULL(kernel);
-    t.user = FileTimeToULL(user);
-    return true;
-}
-
-double CalculateCPU(const CpuTimes& prev, const CpuTimes& curr) {
-    ULONGLONG idle = curr.idle - prev.idle;
-    ULONGLONG total = (curr.kernel - prev.kernel) + (curr.user - prev.user);
-    if (total == 0) return 0.0;
-    return 100.0 * (double)(total - idle) / (double)total;
-}
-
-double GetMemoryUsage() {
-    MEMORYSTATUSEX mem{};
-    mem.dwLength = sizeof(mem);
-    if (!GlobalMemoryStatusEx(&mem)) return 0.0;
-    return (double)mem.dwMemoryLoad;
-}
-
-double GetDiskFree(const wstring& path) {
-    ULARGE_INTEGER freeBytes{}, totalBytes{}, totalFree{};
-    if (!GetDiskFreeSpaceExW(path.c_str(), &freeBytes, &totalBytes, &totalFree)) return 0.0;
-    if (totalBytes.QuadPart == 0) return 0.0;
-    return (100.0 * (double)totalFree.QuadPart) / (double)totalBytes.QuadPart;
-}
-
-// ================= AI HELPERS =================
-void PushHistory(deque<double>& hist, double value, size_t maxSize) {
-    hist.push_back(value);
-    if (hist.size() > maxSize) hist.pop_front();
-}
-
-double ClampDouble(double v, double lo, double hi) {
-    return max(lo, min(hi, v));
-}
-
-double Slope(const deque<double>& hist) {
-    if (hist.size() < 2) return 0.0;
-    double first = hist.front();
-    double last = hist.back();
-    return (last - first) / (double)(hist.size() - 1);
+    MessageBoxA(nullptr, message.c_str(), "AI Alert", MB_OK | MB_ICONWARNING);
 }
 
 double ComputeFallbackProbability(double cpu, double mem, double disk, int cpuTh, int memTh, int diskTh) {
@@ -361,7 +272,6 @@ double ReadModelProbability() {
 
     DeleteFileW(outputPath.c_str());
 
-    text = Trim(text);
     try {
         double prob = stod(text);
         if (prob < 0.0 || prob > 100.0) return -1.0;
@@ -383,12 +293,11 @@ double ReadModelProbabilityWithRetry() {
     return -1.0;
 }
 
-// ================= DRAW HELPERS =================
 void DrawTextAt(HDC hdc, int x, int y, const string& text, COLORREF color, HFONT font) {
     HGDIOBJ oldFont = SelectObject(hdc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, color);
-    TextOutA(hdc, x, y, text.c_str(), (int)text.size());
+    TextOutA(hdc, x, y, text.c_str(), static_cast<int>(text.size()));
     SelectObject(hdc, oldFont);
 }
 
@@ -412,7 +321,7 @@ void DrawProgressBar(HDC hdc, int x, int y, int w, int h, double value, COLORREF
     value = ClampDouble(value, 0.0, 100.0);
 
     RECT bg{ x, y, x + w, y + h };
-    RECT fg{ x, y, x + (int)((value / 100.0) * w), y + h };
+    RECT fg{ x, y, x + static_cast<int>((value / 100.0) * w), y + h };
 
     HBRUSH bgBrush = CreateSolidBrush(RGB(42, 49, 62));
     HBRUSH fgBrush = CreateSolidBrush(fillColor);
@@ -426,8 +335,9 @@ void DrawProgressBar(HDC hdc, int x, int y, int w, int h, double value, COLORREF
 
 void DrawMetricCard(HDC hdc, int x, int y, int w, int h,
                     const string& title,
-                    double current,
-                    double predicted,
+                    const string& valueText,
+                    const string& subText,
+                    double progressValue,
                     COLORREF accent,
                     bool alertCard) {
     RECT rc{ x, y, x + w, y + h };
@@ -437,10 +347,10 @@ void DrawMetricCard(HDC hdc, int x, int y, int w, int h,
     DrawRoundedPanel(hdc, rc, fill, border, 24);
 
     DrawTextAt(hdc, x + 18, y + 14, title, RGB(225, 232, 242), gFontSection);
-    DrawTextAt(hdc, x + 18, y + 44, to_string((int)current) + "%", RGB(255, 255, 255), gFontValue);
-    DrawTextAt(hdc, x + 18, y + 90, "Predicted: " + to_string((int)predicted) + "%", RGB(176, 186, 199), gFontSmall);
+    DrawTextAt(hdc, x + 18, y + 44, valueText, RGB(255, 255, 255), gFontValue);
+    DrawTextAt(hdc, x + 18, y + 90, subText, RGB(176, 186, 199), gFontSmall);
 
-    DrawProgressBar(hdc, x + 18, y + h - 24, w - 36, 10, current, accent);
+    DrawProgressBar(hdc, x + 18, y + h - 24, w - 36, 10, progressValue, accent);
 }
 
 void DrawGraph(HDC hdc, const RECT& rc,
@@ -477,14 +387,14 @@ void DrawGraph(HDC hdc, const RECT& rc,
         HPEN pen = CreatePen(PS_SOLID, 3, color);
         HGDIOBJ old = SelectObject(hdc, pen);
 
-        int n = (int)hist.size();
+        int n = static_cast<int>(hist.size());
         int w = inner.right - inner.left;
         int h = inner.bottom - inner.top;
 
         for (int i = 0; i < n; ++i) {
             double v = ClampDouble(hist[i], 0.0, 100.0);
             int x = inner.left + (i * w) / max(1, n - 1);
-            int y = inner.bottom - (int)((v / 100.0) * h);
+            int y = inner.bottom - static_cast<int>((v / 100.0) * h);
 
             if (i == 0) MoveToEx(hdc, x, y, NULL);
             else LineTo(hdc, x, y);
@@ -504,54 +414,73 @@ void DrawGraph(HDC hdc, const RECT& rc,
 }
 
 void DrawInsightPanel(HDC hdc, const RECT& rc,
-                      double cpu, double mem, double disk,
+                      const SystemSnapshot& snapshot,
                       double aiProb, const string& source,
-                      bool alertNow,
+                      RiskLevel decisionLevel,
+                      double riskScore,
+                      double anomalyScore,
+                      double pressureScore,
+                      const string& decisionSummary,
                       int cpuTh, int memTh, int diskTh,
-                      double aiAlertTh) {
-    COLORREF bg = alertNow ? RGB(64, 24, 32) : RGB(20, 26, 36);
-    COLORREF border = alertNow ? RGB(231, 76, 60) : RGB(62, 76, 94);
+                      double aiAlertTh,
+                      double warningRiskThreshold,
+                      double criticalRiskThreshold) {
+    COLORREF bg = (decisionLevel == RiskLevel::Normal) ? RGB(20, 26, 36) : LevelFillColor(decisionLevel);
+    COLORREF border = (decisionLevel == RiskLevel::Normal) ? RGB(62, 76, 94) : LevelAccentColor(decisionLevel);
     DrawRoundedPanel(hdc, rc, bg, border, 24);
 
     DrawTextAt(hdc, rc.left + 16, rc.top + 14, "AI Insights", RGB(235, 240, 248), gFontSection);
 
     RECT badge{ rc.left + 16, rc.top + 50, rc.right - 16, rc.top + 96 };
-    DrawRoundedPanel(hdc, badge, alertNow ? RGB(231, 76, 60) : RGB(39, 174, 96), alertNow ? RGB(231, 76, 60) : RGB(39, 174, 96), 18);
-    DrawTextAt(hdc, rc.left + 30, rc.top + 63, alertNow ? "ALERT ACTIVE" : "SYSTEM STABLE", RGB(255, 255, 255), gFontSection);
+    DrawRoundedPanel(hdc, badge, LevelAccentColor(decisionLevel), LevelAccentColor(decisionLevel), 18);
+    DrawTextAt(hdc, rc.left + 30, rc.top + 63, DecisionEngine::ToString(decisionLevel), RGB(255, 255, 255), gFontSection);
 
     DrawTextAt(hdc, rc.left + 16, rc.top + 118, "AI Probability", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 138, to_string((int)aiProb) + "%", RGB(255, 255, 255), gFontValue);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 138, to_string(static_cast<int>(aiProb)) + "%", RGB(255, 255, 255), gFontValue);
 
-    DrawProgressBar(hdc, rc.left + 16, rc.top + 188, rc.right - rc.left - 32, 14, aiProb, alertNow ? RGB(231, 76, 60) : RGB(46, 204, 113));
+    DrawProgressBar(hdc, rc.left + 16, rc.top + 188, rc.right - rc.left - 32, 14, aiProb, LevelAccentColor(decisionLevel));
 
     DrawTextAt(hdc, rc.left + 16, rc.top + 224, "Model Source", RGB(230, 235, 245), gFontSection);
     DrawTextAt(hdc, rc.left + 16, rc.top + 252, source, RGB(180, 220, 255), gFontSmall);
 
-    DrawTextAt(hdc, rc.left + 16, rc.top + 300, "Thresholds", RGB(230, 235, 245), gFontSection);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 332, "CPU   " + to_string(cpuTh) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 358, "MEM   " + to_string(memTh) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 384, "DISK  " + to_string(diskTh) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 410, "AI    " + to_string((int)aiAlertTh) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 288, "Thresholds", RGB(230, 235, 245), gFontSection);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 320, "CPU   " + to_string(cpuTh) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 346, "MEM   " + to_string(memTh) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 372, "DISK  " + to_string(diskTh) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 398, "AI    " + to_string(static_cast<int>(aiAlertTh)) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 424, "WARN  " + to_string(static_cast<int>(warningRiskThreshold)) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 450, "CRIT  " + to_string(static_cast<int>(criticalRiskThreshold)) + "%", RGB(170, 180, 195), gFontSmall);
 
-    DrawTextAt(hdc, rc.left + 16, rc.top + 432, "Current Values", RGB(230, 235, 245), gFontSection);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 464, "CPU   " + to_string((int)cpu) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 490, "MEM   " + to_string((int)mem) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 516, "DISK  " + to_string((int)disk) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 486, "Decision", RGB(230, 235, 245), gFontSection);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 518, "Risk     " + to_string(static_cast<int>(riskScore)) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 544, "Anomaly  " + to_string(static_cast<int>(anomalyScore)) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 570, "Pressure " + to_string(static_cast<int>(pressureScore)) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 596, ShortenText(decisionSummary, 30), RGB(180, 220, 255), gFontSmall);
+
+    DrawTextAt(hdc, rc.left + 16, rc.top + 632, "Live Context", RGB(230, 235, 245), gFontSection);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 664, "CPU " + to_string(static_cast<int>(snapshot.cpuUsage)) + "%  MEM " + to_string(static_cast<int>(snapshot.memoryUsage)) + "%", RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 690, "DISK " + to_string(static_cast<int>(snapshot.diskFree)) + "%  NET " + FormatRate(snapshot.netDownKBps), RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 16, rc.top + 716, ShortenText(snapshot.topProcess.name, 26), RGB(180, 220, 255), gFontSmall);
 }
 
-// ================= MONITOR THREAD =================
 void MonitorThread(HWND hwnd) {
-    CpuTimes prev{}, curr{};
-    if (!GetCpuTimes(prev)) return;
+    WindowsMetricsCollector collector;
+    if (!collector.Initialize()) return;
 
-    int cpuTh = GetInt("CPU_THRESHOLD", 80);
-    int memTh = GetInt("MEM_THRESHOLD", 85);
-    int diskTh = GetInt("DISK_THRESHOLD", 10);
-    int aiPredictIntervalTicks = max(1, GetInt("AI_PREDICT_INTERVAL_TICKS", DEFAULT_AI_PREDICT_INTERVAL_TICKS));
-    double aiAlertThreshold = ClampDouble(GetDouble("AI_ALERT_THRESHOLD", DEFAULT_AI_ALERT_THRESHOLD), 0.0, 100.0);
-    double aiAlertClearThreshold = ClampDouble(GetDouble("AI_ALERT_CLEAR_THRESHOLD", DEFAULT_AI_ALERT_CLEAR_THRESHOLD), 0.0, aiAlertThreshold);
-    int aiAlertTriggerStreak = max(1, GetInt("AI_ALERT_TRIGGER_STREAK", DEFAULT_AI_ALERT_TRIGGER_STREAK));
-    int aiAlertClearStreak = max(1, GetInt("AI_ALERT_CLEAR_STREAK", DEFAULT_AI_ALERT_CLEAR_STREAK));
+    int cpuTh = g_config.GetInt("CPU_THRESHOLD", 80);
+    int memTh = g_config.GetInt("MEM_THRESHOLD", 85);
+    int diskTh = g_config.GetInt("DISK_THRESHOLD", 10);
+    int aiPredictIntervalTicks = max(1, g_config.GetInt("AI_PREDICT_INTERVAL_TICKS", DEFAULT_AI_PREDICT_INTERVAL_TICKS));
+    double aiAlertThreshold = ClampDouble(g_config.GetDouble("AI_ALERT_THRESHOLD", DEFAULT_AI_ALERT_THRESHOLD), 0.0, 100.0);
+    double aiAlertClearThreshold = ClampDouble(g_config.GetDouble("AI_ALERT_CLEAR_THRESHOLD", DEFAULT_AI_ALERT_CLEAR_THRESHOLD), 0.0, aiAlertThreshold);
+    int aiAlertTriggerStreak = max(1, g_config.GetInt("AI_ALERT_TRIGGER_STREAK", DEFAULT_AI_ALERT_TRIGGER_STREAK));
+    int aiAlertClearStreak = max(1, g_config.GetInt("AI_ALERT_CLEAR_STREAK", DEFAULT_AI_ALERT_CLEAR_STREAK));
+    DecisionThresholds decisionThresholds;
+    decisionThresholds.cpuThreshold = cpuTh;
+    decisionThresholds.memThreshold = memTh;
+    decisionThresholds.diskThreshold = diskTh;
+    decisionThresholds.warningRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_WARNING_THRESHOLD", 55.0), 0.0, 100.0);
+    decisionThresholds.criticalRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_CRITICAL_THRESHOLD", 75.0), decisionThresholds.warningRiskThreshold, 100.0);
     const wstring runtimeFeaturesPath = (fs::path(GetExecutableDir()) / L"runtime_features.json").wstring();
 
     bool lastAlert = false;
@@ -559,39 +488,46 @@ void MonitorThread(HWND hwnd) {
     int highRiskStreak = 0;
     int lowRiskStreak = 0;
 
-    while (true) {
+    while (g_running) {
         this_thread::sleep_for(seconds(1));
+        if (!g_running) break;
 
-        if (!GetCpuTimes(curr)) continue;
+        SystemSnapshot snapshot = collector.Collect();
 
-        double cpu = CalculateCPU(prev, curr);
-        double mem = GetMemoryUsage();
-        double disk = GetDiskFree(L"C:\\");
-
-        prev = curr;
-
-        deque<double> cpuCopy, memCopy, diskCopy;
+        deque<double> cpuCopy, memCopy, diskCopy, netCopy, processCopy;
         double aiProbLocal = 0.0;
         string sourceLocal = "WARMING UP";
         bool alertLocal = false;
+        DecisionResult decisionResult;
 
         {
             lock_guard<mutex> lock(g_dataMutex);
 
-            g_cpu = cpu;
-            g_mem = mem;
-            g_disk = disk;
+            g_cpu = snapshot.cpuUsage;
+            g_mem = snapshot.memoryUsage;
+            g_disk = snapshot.diskFree;
+            g_netDown = snapshot.netDownKBps;
+            g_netUp = snapshot.netUpKBps;
+            g_processCount = snapshot.processCount;
+            g_topProcessPid = snapshot.topProcess.pid;
+            g_topProcessName = snapshot.topProcess.name;
+            g_topProcessCpu = snapshot.topProcess.cpuPercent;
+            g_topProcessMem = snapshot.topProcess.memoryMB;
 
-            PushHistory(g_cpuHist, cpu, HISTORY_SIZE);
-            PushHistory(g_memHist, mem, HISTORY_SIZE);
-            PushHistory(g_diskHist, disk, HISTORY_SIZE);
+            PushHistory(g_cpuHist, snapshot.cpuUsage, HISTORY_SIZE);
+            PushHistory(g_memHist, snapshot.memoryUsage, HISTORY_SIZE);
+            PushHistory(g_diskHist, snapshot.diskFree, HISTORY_SIZE);
+            PushHistory(g_netHist, snapshot.netDownKBps + snapshot.netUpKBps, HISTORY_SIZE);
+            PushHistory(g_processHist, static_cast<double>(snapshot.processCount), HISTORY_SIZE);
 
             cpuCopy = g_cpuHist;
             memCopy = g_memHist;
             diskCopy = g_diskHist;
+            netCopy = g_netHist;
+            processCopy = g_processHist;
         }
 
-        LogToDB(cpu, mem, disk);
+        g_pipeline.Enqueue(snapshot);
         WriteRuntimeFeaturesJson(runtimeFeaturesPath, cpuCopy, memCopy, diskCopy, cpuTh, memTh, diskTh);
 
         double modelProb = -1.0;
@@ -604,24 +540,47 @@ void MonitorThread(HWND hwnd) {
             modelProb = ReadModelProbabilityWithRetry();
         }
 
+        double currentAiProb = 0.0;
+        string currentSource = "WARMING UP";
+
         {
             lock_guard<mutex> lock(g_dataMutex);
 
             if (!hasModelWindow) {
-                g_aiProb = ComputeFallbackProbability(cpu, mem, disk, cpuTh, memTh, diskTh);
+                g_aiProb = ComputeFallbackProbability(snapshot.cpuUsage, snapshot.memoryUsage, snapshot.diskFree, cpuTh, memTh, diskTh);
                 g_aiSource = "WARMING UP";
             } else if (modelProb >= 0.0) {
                 g_aiProb = modelProb;
                 g_aiSource = "MODEL";
             } else {
-                g_aiProb = ComputeFallbackProbability(cpu, mem, disk, cpuTh, memTh, diskTh);
+                g_aiProb = ComputeFallbackProbability(snapshot.cpuUsage, snapshot.memoryUsage, snapshot.diskFree, cpuTh, memTh, diskTh);
                 g_aiSource = "FALLBACK";
             }
 
-            if (g_aiProb >= aiAlertThreshold) {
+            currentAiProb = g_aiProb;
+            currentSource = g_aiSource;
+        }
+
+        DecisionContext decisionContext;
+        decisionContext.cpuHistory = cpuCopy;
+        decisionContext.memHistory = memCopy;
+        decisionContext.diskHistory = diskCopy;
+        decisionContext.netHistory = netCopy;
+        decisionContext.processHistory = processCopy;
+        decisionResult = g_decisionEngine.Evaluate(snapshot, currentAiProb, currentSource, decisionThresholds, decisionContext);
+
+        {
+            lock_guard<mutex> lock(g_dataMutex);
+            g_riskScore = decisionResult.riskScore;
+            g_anomalyScore = decisionResult.anomalyScore;
+            g_pressureScore = decisionResult.pressureScore;
+            g_decisionLevel = decisionResult.level;
+            g_decisionSummary = decisionResult.summary;
+
+            if (decisionResult.level == RiskLevel::Critical) {
                 ++highRiskStreak;
                 lowRiskStreak = 0;
-            } else if (g_aiProb <= aiAlertClearThreshold) {
+            } else if (decisionResult.level == RiskLevel::Normal || decisionResult.riskScore <= aiAlertClearThreshold) {
                 ++lowRiskStreak;
                 highRiskStreak = 0;
             } else {
@@ -646,8 +605,11 @@ void MonitorThread(HWND hwnd) {
         if (alertLocal && !lastAlert) {
             string msg =
                 "System Risk Detected!\n\n" +
-                string("AI Probability: ") + to_string((int)aiProbLocal) + "%\n" +
-                string("Source: ") + sourceLocal;
+                string("Risk Score: ") + to_string(static_cast<int>(decisionResult.riskScore)) + "%\n" +
+                string("AI Probability: ") + to_string(static_cast<int>(aiProbLocal)) + "%\n" +
+                string("Source: ") + sourceLocal + "\n" +
+                string("Top Process: ") + ShortenText(snapshot.topProcess.name, 28) + "\n" +
+                string("Decision: ") + decisionResult.summary;
 
             ShowAlert(msg);
         }
@@ -659,7 +621,6 @@ void MonitorThread(HWND hwnd) {
     }
 }
 
-// ================= WINDOW PROC =================
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_PAINT: {
@@ -679,29 +640,49 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         SetBkMode(memDC, TRANSPARENT);
 
-        double cpu, mem, disk, aiProb;
-        bool alertNow;
+        SystemSnapshot snapshot;
+        double aiProb = 0.0;
+        bool criticalAlertActive = false;
         string source;
+        string decisionSummary;
+        RiskLevel decisionLevel = RiskLevel::Normal;
+        double riskScore = 0.0;
+        double anomalyScore = 0.0;
+        double pressureScore = 0.0;
         deque<double> cpuHist, memHist, diskHist;
-        int cpuTh = GetInt("CPU_THRESHOLD", 80);
-        int memTh = GetInt("MEM_THRESHOLD", 85);
-        int diskTh = GetInt("DISK_THRESHOLD", 10);
-        double aiAlertTh = ClampDouble(GetDouble("AI_ALERT_THRESHOLD", DEFAULT_AI_ALERT_THRESHOLD), 0.0, 100.0);
+        int cpuTh = g_config.GetInt("CPU_THRESHOLD", 80);
+        int memTh = g_config.GetInt("MEM_THRESHOLD", 85);
+        int diskTh = g_config.GetInt("DISK_THRESHOLD", 10);
+        double aiAlertTh = ClampDouble(g_config.GetDouble("AI_ALERT_THRESHOLD", DEFAULT_AI_ALERT_THRESHOLD), 0.0, 100.0);
+        double warningRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_WARNING_THRESHOLD", 55.0), 0.0, 100.0);
+        double criticalRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_CRITICAL_THRESHOLD", 75.0), warningRiskThreshold, 100.0);
 
         {
             lock_guard<mutex> lock(g_dataMutex);
-            cpu = g_cpu;
-            mem = g_mem;
-            disk = g_disk;
+            snapshot.cpuUsage = g_cpu;
+            snapshot.memoryUsage = g_mem;
+            snapshot.diskFree = g_disk;
+            snapshot.netDownKBps = g_netDown;
+            snapshot.netUpKBps = g_netUp;
+            snapshot.processCount = g_processCount;
+            snapshot.topProcess.pid = g_topProcessPid;
+            snapshot.topProcess.name = g_topProcessName;
+            snapshot.topProcess.cpuPercent = g_topProcessCpu;
+            snapshot.topProcess.memoryMB = g_topProcessMem;
             aiProb = g_aiProb;
-            alertNow = g_alert;
+            riskScore = g_riskScore;
+            anomalyScore = g_anomalyScore;
+            pressureScore = g_pressureScore;
+            criticalAlertActive = g_alert;
             source = g_aiSource;
+            decisionSummary = g_decisionSummary;
+            decisionLevel = g_decisionLevel;
             cpuHist = g_cpuHist;
             memHist = g_memHist;
             diskHist = g_diskHist;
         }
 
-        const int sidebarW = 250;
+        const int sidebarW = 270;
         const int pad = 18;
         const int headerH = 82;
 
@@ -713,51 +694,57 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawTextAt(memDC, 20, 76, "Monitoring", RGB(160, 170, 185), gFontSmall);
 
         RECT modeBadge{ 18, 112, sidebarW - 18, 160 };
-        DrawRoundedPanel(memDC, modeBadge, alertNow ? RGB(64, 24, 32) : RGB(25, 51, 44), alertNow ? RGB(231, 76, 60) : RGB(46, 204, 113), 18);
-        DrawTextAt(memDC, 36, 128, alertNow ? "ALERT MODE" : "NORMAL MODE", RGB(255, 255, 255), gFontSection);
+        DrawRoundedPanel(memDC, modeBadge, LevelFillColor(decisionLevel), LevelAccentColor(decisionLevel), 18);
+        DrawTextAt(memDC, 36, 128, string(DecisionEngine::ToString(decisionLevel)) + " MODE", RGB(255, 255, 255), gFontSection);
 
         DrawTextAt(memDC, 20, 190, "Thresholds", RGB(230, 235, 245), gFontSection);
         DrawTextAt(memDC, 20, 222, "CPU   " + to_string(cpuTh) + "%", RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 20, 246, "MEM   " + to_string(memTh) + "%", RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 20, 270, "DISK  " + to_string(diskTh) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 20, 294, "AI    " + to_string((int)aiAlertTh) + "%", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 294, "AI    " + to_string(static_cast<int>(aiAlertTh)) + "%", RGB(170, 180, 195), gFontSmall);
 
         DrawTextAt(memDC, 20, 334, "Current", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(memDC, 20, 366, "CPU   " + to_string((int)cpu) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 20, 390, "MEM   " + to_string((int)mem) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 20, 414, "DISK  " + to_string((int)disk) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 20, 438, "AI    " + to_string((int)aiProb) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 20, 462, "SRC   " + source, RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 366, "CPU   " + to_string(static_cast<int>(snapshot.cpuUsage)) + "%", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 390, "MEM   " + to_string(static_cast<int>(snapshot.memoryUsage)) + "%", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 414, "DISK  " + to_string(static_cast<int>(snapshot.diskFree)) + "%", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 438, "AI    " + to_string(static_cast<int>(aiProb)) + "%", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 462, "RISK  " + to_string(static_cast<int>(riskScore)) + "%", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 486, "LVL   " + string(DecisionEngine::ToString(decisionLevel)), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 510, "SRC   " + source, RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 534, "DOWN  " + FormatRate(snapshot.netDownKBps), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 558, "PROC  " + to_string(snapshot.processCount), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 20, 582, "TOP   " + ShortenText(snapshot.topProcess.name, 18), RGB(170, 180, 195), gFontSmall);
 
         int mainX = sidebarW + pad;
         int mainW = client.right - mainX - pad;
 
         DrawTextAt(memDC, mainX, 16, "AI Monitoring Dashboard", RGB(238, 242, 249), gFontTitle);
-        DrawTextAt(memDC, mainX, 42, "Live metrics, model prediction, alerts, and logs", RGB(140, 150, 165), gFontSmall);
+        DrawTextAt(memDC, mainX, 42, "Live metrics, queued storage, decision scoring, and Windows process/network telemetry", RGB(140, 150, 165), gFontSmall);
 
         RECT statusBadge{ client.right - 220, 18, client.right - 20, 56 };
-        DrawRoundedPanel(memDC, statusBadge, alertNow ? RGB(64, 24, 32) : RGB(25, 51, 44), alertNow ? RGB(231, 76, 60) : RGB(46, 204, 113), 18);
-        DrawTextAt(memDC, client.right - 190, 29, alertNow ? "LIVE ALERT" : "SYSTEM OK", RGB(255, 255, 255), gFontSection);
+        DrawRoundedPanel(memDC, statusBadge, LevelFillColor(decisionLevel), LevelAccentColor(decisionLevel), 18);
+        DrawTextAt(memDC, client.right - 190, 29, DecisionEngine::ToString(decisionLevel), RGB(255, 255, 255), gFontSection);
 
         int rowY = headerH + 14;
         int cardH = 138;
-        int gap = 14;
-        int cardW = (mainW - (gap * 3)) / 4;
+        int gap = 12;
+        int cardW = (mainW - (gap * 4)) / 5;
 
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 0, rowY, cardW, cardH, "CPU USAGE", cpu, cpu, RGB(52, 152, 219), false);
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 1, rowY, cardW, cardH, "MEMORY", mem, mem, RGB(46, 204, 113), false);
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 2, rowY, cardW, cardH, "DISK FREE", disk, disk, RGB(241, 196, 15), false);
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 3, rowY, cardW, cardH, "AI RISK", aiProb, aiProb, RGB(231, 76, 60), alertNow);
+        DrawMetricCard(memDC, mainX + (cardW + gap) * 0, rowY, cardW, cardH, "CPU USAGE", to_string(static_cast<int>(snapshot.cpuUsage)) + "%", "Live CPU", snapshot.cpuUsage, RGB(52, 152, 219), false);
+        DrawMetricCard(memDC, mainX + (cardW + gap) * 1, rowY, cardW, cardH, "MEMORY", to_string(static_cast<int>(snapshot.memoryUsage)) + "%", "Live memory", snapshot.memoryUsage, RGB(46, 204, 113), false);
+        DrawMetricCard(memDC, mainX + (cardW + gap) * 2, rowY, cardW, cardH, "DISK FREE", to_string(static_cast<int>(snapshot.diskFree)) + "%", "Free disk", 100.0 - snapshot.diskFree, RGB(241, 196, 15), false);
+        DrawMetricCard(memDC, mainX + (cardW + gap) * 3, rowY, cardW, cardH, "NETWORK", FormatRate(snapshot.netDownKBps), "Up: " + FormatRate(snapshot.netUpKBps), ClampDouble((snapshot.netDownKBps / 1024.0) * 100.0, 0.0, 100.0), RGB(155, 89, 182), false);
+        DrawMetricCard(memDC, mainX + (cardW + gap) * 4, rowY, cardW, cardH, "RISK SCORE", to_string(static_cast<int>(riskScore)) + "%", string(DecisionEngine::ToString(decisionLevel)), riskScore, LevelAccentColor(decisionLevel), criticalAlertActive);
 
         int contentTop = rowY + cardH + 16;
-        int graphW = mainW - 300 - 16;
+        int graphW = mainW - 320 - 16;
         int graphH = client.bottom - contentTop - 20;
 
         RECT graphRc{ mainX, contentTop, mainX + graphW, contentTop + graphH };
         RECT insightRc{ mainX + graphW + 16, contentTop, client.right - pad, contentTop + graphH };
 
         DrawGraph(memDC, graphRc, cpuHist, memHist, diskHist);
-        DrawInsightPanel(memDC, insightRc, cpu, mem, disk, aiProb, source, alertNow, cpuTh, memTh, diskTh, aiAlertTh);
+        DrawInsightPanel(memDC, insightRc, snapshot, aiProb, source, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
 
         DrawTextAt(memDC, mainX, client.bottom - 16, "Press Ctrl+C in the terminal to stop monitoring", RGB(120, 130, 145), gFontSmall);
 
@@ -775,11 +762,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         return 1;
 
     case WM_DESTROY:
+        g_running = false;
+        if (g_monitorThread.joinable()) {
+            g_monitorThread.join();
+        }
+        g_pipeline.Stop();
         if (gFontTitle) DeleteObject(gFontTitle);
         if (gFontSection) DeleteObject(gFontSection);
         if (gFontValue) DeleteObject(gFontValue);
         if (gFontSmall) DeleteObject(gFontSmall);
-        CloseDB();
+        g_storage.Close();
         PostQuitMessage(0);
         return 0;
     }
@@ -787,10 +779,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
-// ================= MAIN =================
 int main() {
-    LoadConfig();
-    InitDB();
+    g_config.LoadFromFile("config.txt");
+    g_storage.Open("monitor.db");
+    g_pipeline.Start(
+        &g_storage,
+        static_cast<size_t>(max(1, g_config.GetInt("PIPELINE_BATCH_SIZE", 8))),
+        milliseconds(max(100, g_config.GetInt("PIPELINE_FLUSH_MS", 2000)))
+    );
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
     const wchar_t CLASS_NAME[] = L"MonitorWindow";
@@ -800,7 +796,7 @@ int main() {
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 
     if (!RegisterClassW(&wc)) {
         MessageBoxA(NULL, "Failed to register window class.", "Error", MB_OK | MB_ICONERROR);
@@ -825,7 +821,7 @@ int main() {
         CLASS_NAME,
         L"AI Monitoring Dashboard",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1260, 800,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1440, 1020,
         NULL, NULL, hInstance, NULL
     );
 
@@ -837,8 +833,7 @@ int main() {
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
-    thread t(MonitorThread, hwnd);
-    t.detach();
+    g_monitorThread = thread(MonitorThread, hwnd);
 
     MSG msg{};
     while (GetMessageW(&msg, NULL, 0, 0)) {
