@@ -1,0 +1,1 @@
+{"risk":55.7736,"probability":55.7736,"confidence":50.6347,"class":"WARNING","reason":"disk space low","recommended_action":"increase_observation","safe_to_heal":false,"class_probabilities":{"NORMAL":17.5017,"WARNING":50.6347,"CRITICAL":13.1411,"RECOVERY":18.7225},"feature_count":50,"contract":"ai_reliability_v2"}

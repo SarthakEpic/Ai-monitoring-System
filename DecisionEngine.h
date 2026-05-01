@@ -33,6 +33,9 @@ struct DecisionResult {
     double anomalyScore = 0.0;
     double pressureScore = 0.0;
     std::string summary = "System stable";
+    std::string reason = "No risk detected";
+    std::string recommendedAction = "monitor_only";
+    bool safeToHeal = false;
 };
 
 class DecisionEngine {
@@ -40,7 +43,9 @@ public:
     DecisionResult Evaluate(
         const SystemSnapshot& snapshot,
         double aiProbability,
+        double aiConfidence,
         const std::string& aiSource,
+        const std::string& aiReason,
         const DecisionThresholds& thresholds,
         const DecisionContext& context
     ) const;

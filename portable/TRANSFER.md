@@ -8,8 +8,11 @@ Copy the portable folder contents to the target Windows device:
 - `config.txt`
 - `predict_model.py`
 - `model_features.py`
+- `labeling.py`
 - `ai_model.joblib`
 - `ai_model_meta.json`
+- `model_report.json`
+- `model_report.txt`
 - `requirements.txt`
 
 ## Target device setup

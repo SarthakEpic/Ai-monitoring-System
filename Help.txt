@@ -16,9 +16,9 @@ cd build
 cmake ..
 cmake --build .
 
-cd D:\AI_Driven\PredictiveAutoHeal\build\Debug
-
-Debug\PredictiveAutoHeal.exe
+//to run the app
+cd D:\AI_Driven\PredictiveAutoHeal
+.\build\Debug\PredictiveAutoHeal.exe
 
 python.exe -m pip install --upgrade pip
 
@@ -36,3 +36,9 @@ AI_PREDICT_INTERVAL_TICKS=2
 
 //runtime python used by the app
 PYTHON_EXE=python
+
+//use can change the app performance mode by changing config.txt
+PERFORMANCE_MODE=LOW_END
+PERFORMANCE_MODE=BALANCED
+PERFORMANCE_MODE=HIGH_PERFORMANCE
+

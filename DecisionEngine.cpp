@@ -69,7 +69,18 @@ double ComputeAnomalyScore(const SystemSnapshot& snapshot, const DecisionContext
     );
 }
 
-string BuildSummary(const SystemSnapshot& snapshot, double anomalyScore, double pressureScore, double aiProbability, RiskLevel level) {
+string BuildReason(const SystemSnapshot& snapshot, double anomalyScore, double pressureScore, double aiProbability, const string& aiReason) {
+    if (!aiReason.empty() && aiReason != "N/A") return aiReason;
+    if (snapshot.diskFree <= 5.0) return "low disk space";
+    if (snapshot.memoryUsage >= 90.0) return "high memory pressure";
+    if (snapshot.cpuUsage >= 90.0) return "high cpu pressure";
+    if (snapshot.topProcess.cpuPercent >= 50.0) return "hot process " + snapshot.topProcess.name;
+    if (anomalyScore >= max(pressureScore, aiProbability)) return "anomalous behavior spike";
+    if (aiProbability >= pressureScore) return "forecast trend elevated";
+    return "threshold pressure elevated";
+}
+
+string BuildSummary(const string& reason, RiskLevel level) {
     ostringstream oss;
     if (level == RiskLevel::Critical) {
         oss << "Critical risk";
@@ -78,29 +89,26 @@ string BuildSummary(const SystemSnapshot& snapshot, double anomalyScore, double 
     } else {
         oss << "System stable";
     }
-
-    if (snapshot.diskFree <= 5.0) {
-        oss << ": low disk space";
-    } else if (snapshot.memoryUsage >= 90.0) {
-        oss << ": high memory pressure";
-    } else if (snapshot.topProcess.cpuPercent >= 50.0) {
-        oss << ": hot process " << snapshot.topProcess.name;
-    } else if (anomalyScore >= max(pressureScore, aiProbability)) {
-        oss << ": anomalous behavior spike";
-    } else if (aiProbability >= pressureScore) {
-        oss << ": forecast trend elevated";
-    } else {
-        oss << ": threshold pressure elevated";
-    }
-
+    oss << ": " << reason;
     return oss.str();
+}
+
+string RecommendAction(RiskLevel level, double aiConfidence, const string& aiSource) {
+    if (level == RiskLevel::Critical && aiSource == "MODEL" && aiConfidence >= 78.0) {
+        return "prepare_heal_review";
+    }
+    if (level == RiskLevel::Critical) return "manual_investigation";
+    if (level == RiskLevel::Warning) return "increase_observation";
+    return "monitor_only";
 }
 }
 
 DecisionResult DecisionEngine::Evaluate(
     const SystemSnapshot& snapshot,
     double aiProbability,
+    double aiConfidence,
     const string& aiSource,
+    const string& aiReason,
     const DecisionThresholds& thresholds,
     const DecisionContext& context
 ) const {
@@ -116,8 +124,9 @@ DecisionResult DecisionEngine::Evaluate(
     );
     result.anomalyScore = ComputeAnomalyScore(snapshot, context);
 
+    const double confidenceFactor = ClampPercent(aiConfidence) / 100.0;
     double aiWeight = 0.20;
-    if (aiSource == "MODEL") aiWeight = 0.55;
+    if (aiSource == "MODEL") aiWeight = 0.35 + (0.30 * confidenceFactor);
     else if (aiSource == "FALLBACK") aiWeight = 0.35;
 
     const double anomalyWeight = 0.25;
@@ -139,7 +148,10 @@ DecisionResult DecisionEngine::Evaluate(
         result.level = RiskLevel::Normal;
     }
 
-    result.summary = BuildSummary(snapshot, result.anomalyScore, result.pressureScore, aiProbability, result.level);
+    result.reason = BuildReason(snapshot, result.anomalyScore, result.pressureScore, aiProbability, aiReason);
+    result.summary = BuildSummary(result.reason, result.level);
+    result.recommendedAction = RecommendAction(result.level, aiConfidence, aiSource);
+    result.safeToHeal = false;
     return result;
 }
 

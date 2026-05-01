@@ -1,34 +1,75 @@
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List
 
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
-from model_features import WINDOW, build_features, load_thresholds
+from labeling import ID_TO_LABEL, LABELS, LABEL_TO_ID, LabelThresholds, label_future_window
+from model_features import FEATURE_NAMES, WINDOW, build_features, load_thresholds
 
-HORIZON = 3
+HORIZON = 5
 
 
-def future_risk_score(future: np.ndarray, disk_th: int) -> float:
-    future_cpu = float(future[:, 0].max())
-    future_mem = float(future[:, 1].max())
-    future_disk = float(future[:, 2].min())
+def _read_metrics(db_path: str) -> pd.DataFrame:
+    conn = sqlite3.connect(db_path)
+    try:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(metrics);").fetchall()
+        }
+        select_parts = ["time", "cpu", "mem", "disk"]
+        if "net_down_kbps" in columns and "net_up_kbps" in columns:
+            select_parts.append("COALESCE(net_down_kbps, 0) + COALESCE(net_up_kbps, 0) AS net")
+        else:
+            select_parts.append("0 AS net")
+        select_parts.append("COALESCE(process_count, 0) AS process_count" if "process_count" in columns else "0 AS process_count")
+        select_parts.append("COALESCE(top_process, '') AS top_process" if "top_process" in columns else "'' AS top_process")
+        select_parts.append("COALESCE(top_process_cpu, 0) AS top_process_cpu" if "top_process_cpu" in columns else "0 AS top_process_cpu")
+        select_parts.append("COALESCE(top_process_mem, 0) AS top_process_mem" if "top_process_mem" in columns else "0 AS top_process_mem")
 
-    cpu_part = future_cpu / 100.0
-    mem_part = future_mem / 100.0
-    disk_part = 0.0
-    if future_disk < disk_th:
-        disk_part = max(0.0, (disk_th - future_disk) / max(1, disk_th))
+        query = "SELECT " + ", ".join(select_parts) + " FROM metrics ORDER BY time ASC"
+        df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
+    return df
 
-    score = 0.45 * cpu_part + 0.45 * mem_part + 0.10 * disk_part
-    return float(score)
+
+def _class_distribution(labels: np.ndarray) -> Dict[str, int]:
+    return {label: int(np.sum(labels == LABEL_TO_ID[label])) for label in LABELS}
+
+
+def _write_text_report(path: str, report: Dict[str, object]) -> None:
+    lines = [
+        "AI Model Reliability Report",
+        "===========================",
+        f"Generated: {report['generated_at']}",
+        f"Rows used: {report['rows']}",
+        f"Samples: {report['samples']}",
+        f"Window: {report['window']}",
+        f"Horizon: {report['horizon']}",
+        f"Accuracy: {report['accuracy']:.4f}",
+        "",
+        "Class distribution:",
+    ]
+    for label, count in report["class_distribution"].items():
+        lines.append(f"- {label}: {count}")
+    lines.extend(["", "Confusion matrix labels: " + ", ".join(report["labels"]), str(report["confusion_matrix"])])
+    lines.extend(["", "Top feature importance:"])
+    for item in report["top_features"]:
+        lines.append(f"- {item['feature']}: {item['importance']:.4f}")
+    lines.extend(["", "Classification report:", report["classification_report_text"]])
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
 def main() -> int:
@@ -36,108 +77,136 @@ def main() -> int:
     parser.add_argument("--db", default="monitor.db")
     parser.add_argument("--model", default="ai_model.joblib")
     parser.add_argument("--meta", default="ai_model_meta.json")
+    parser.add_argument("--report-json", default="model_report.json")
+    parser.add_argument("--report-txt", default="model_report.txt")
     args = parser.parse_args()
 
     cpu_th, mem_th, disk_th = load_thresholds("config.txt")
+    thresholds = LabelThresholds(cpu=cpu_th, mem=mem_th, disk=disk_th)
 
     if not os.path.exists(args.db):
         print("monitor.db not found. Run the app first and collect data.")
         return 1
 
-    conn = sqlite3.connect(args.db)
-    try:
-        df = pd.read_sql_query(
-            "SELECT time, cpu, mem, disk FROM metrics ORDER BY time ASC",
-            conn,
-        )
-    finally:
-        conn.close()
-
-    if len(df) < WINDOW + HORIZON + 20:
-        print(f"Not enough rows yet. Need at least {WINDOW + HORIZON + 20}, found {len(df)}.")
+    df = _read_metrics(args.db)
+    if len(df) < WINDOW + HORIZON + 30:
+        print(f"Not enough rows yet. Need at least {WINDOW + HORIZON + 30}, found {len(df)}.")
         return 1
 
-    arr = df[["cpu", "mem", "disk"]].to_numpy(dtype=float)
+    arr = df[["cpu", "mem", "disk", "net", "process_count"]].to_numpy(dtype=float)
 
     X: List[np.ndarray] = []
-    scores: List[float] = []
+    y: List[int] = []
 
     for i in range(WINDOW - 1, len(arr) - HORIZON):
         past = arr[i - WINDOW + 1 : i + 1]
-        future = arr[i + 1 : i + HORIZON + 1]
-        X.append(build_features(past, disk_th))
-        scores.append(future_risk_score(future, disk_th))
+        future = arr[i + 1 : i + HORIZON + 1, :3]
+        label = label_future_window(future, thresholds)
+        X.append(build_features(past, disk_th, cpu_th, mem_th))
+        y.append(LABEL_TO_ID[label])
 
-    cutoff = max(0.50, float(np.quantile(scores, 0.70)))
-    y = np.array([1 if s >= cutoff else 0 for s in scores], dtype=int)
+    X_np = np.vstack(X)
+    y_np = np.asarray(y, dtype=int)
 
-    if len(np.unique(y)) < 2:
+    present_classes = sorted(np.unique(y_np).tolist())
+    if len(present_classes) < 2:
         print("Training labels ended up with one class only. Collect more varied data and try again.")
         return 1
 
-    X = np.vstack(X)
-
-    feature_names = [
-        "cpu_last", "cpu_mean", "cpu_std", "cpu_min", "cpu_max", "cpu_delta", "cpu_slope",
-        "mem_last", "mem_mean", "mem_std", "mem_min", "mem_max", "mem_delta", "mem_slope",
-        "disk_last", "disk_mean", "disk_std", "disk_min", "disk_max", "disk_delta", "disk_slope",
-        "cpu_mem_gap", "mem_disk_gap", "cpu_disk_gap", "disk_pressure",
-    ]
-
+    stratify = y_np if min(np.bincount(y_np)) >= 2 else None
     X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
+        X_np,
+        y_np,
         test_size=0.25,
         random_state=42,
-        stratify=y,
+        stratify=stratify,
     )
 
     model = RandomForestClassifier(
-        n_estimators=350,
-        max_depth=10,
+        n_estimators=420,
+        max_depth=12,
         min_samples_leaf=2,
         class_weight="balanced_subsample",
         random_state=42,
         n_jobs=1,
     )
-
     model.fit(X_train, y_train)
 
     preds = model.predict(X_test)
-    probas = model.predict_proba(X_test)[:, 1]
+    accuracy = accuracy_score(y_test, preds)
+    target_names = [ID_TO_LABEL[idx] for idx in present_classes]
+    report_dict = classification_report(
+        y_test,
+        preds,
+        labels=present_classes,
+        target_names=target_names,
+        digits=4,
+        zero_division=0,
+        output_dict=True,
+    )
+    report_text = classification_report(
+        y_test,
+        preds,
+        labels=present_classes,
+        target_names=target_names,
+        digits=4,
+        zero_division=0,
+    )
+    matrix = confusion_matrix(y_test, preds, labels=present_classes).tolist()
 
-    print(f"Rows used: {len(df)}")
-    print(f"Samples: {len(X)}")
-    print(f"Positive cutoff: {cutoff:.4f}")
-    print(f"Accuracy: {accuracy_score(y_test, preds):.4f}")
-
-    try:
-        print(f"ROC-AUC: {roc_auc_score(y_test, probas):.4f}")
-    except Exception:
-        pass
-
-    print(classification_report(y_test, preds, digits=4))
+    importances = getattr(model, "feature_importances_", np.zeros(len(FEATURE_NAMES)))
+    top_features = sorted(
+        [
+            {"feature": feature, "importance": float(importance)}
+            for feature, importance in zip(FEATURE_NAMES, importances)
+        ],
+        key=lambda item: item["importance"],
+        reverse=True,
+    )[:12]
 
     joblib.dump(model, args.model)
 
+    generated_at = datetime.now(timezone.utc).isoformat()
     meta: Dict[str, object] = {
+        "contract": "ai_reliability_v2",
+        "generated_at": generated_at,
         "window": WINDOW,
         "horizon": HORIZON,
         "cpu_threshold": cpu_th,
         "mem_threshold": mem_th,
         "disk_threshold": disk_th,
-        "label_cutoff": cutoff,
         "rows": len(df),
-        "samples": len(X),
-        "feature_count": len(feature_names),
-        "features": feature_names,
+        "samples": len(X_np),
+        "feature_count": len(FEATURE_NAMES),
+        "features": FEATURE_NAMES,
+        "labels": LABELS,
+    }
+
+    report: Dict[str, object] = {
+        **meta,
+        "accuracy": float(accuracy),
+        "class_distribution": _class_distribution(y_np),
+        "test_class_distribution": _class_distribution(y_test),
+        "confusion_matrix": matrix,
+        "classification_report": report_dict,
+        "classification_report_text": report_text,
+        "top_features": top_features,
     }
 
     with open(args.meta, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+    with open(args.report_json, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    _write_text_report(args.report_txt, report)
 
+    print(f"Rows used: {len(df)}")
+    print(f"Samples: {len(X_np)}")
+    print(f"Accuracy: {accuracy:.4f}")
+    print(report_text)
     print(f"Saved model to {args.model}")
     print(f"Saved meta to {args.meta}")
+    print(f"Saved JSON report to {args.report_json}")
+    print(f"Saved text report to {args.report_txt}")
     return 0
 
 
