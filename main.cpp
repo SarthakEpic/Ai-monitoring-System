@@ -114,6 +114,10 @@ string ShortenText(const string& text, size_t maxLen) {
     return text.substr(0, maxLen - 3) + "...";
 }
 
+wstring WidenAscii(const string& text) {
+    return wstring(text.begin(), text.end());
+}
+
 COLORREF LevelFillColor(RiskLevel level) {
     switch (level) {
     case RiskLevel::Critical:
@@ -152,6 +156,15 @@ wstring ResolveExistingPath(const vector<wstring>& candidates) {
         }
     }
     return candidates.empty() ? L"" : candidates.front();
+}
+
+string ResolveExistingPathString(const vector<fs::path>& candidates) {
+    for (const auto& candidate : candidates) {
+        if (!candidate.empty() && fs::exists(candidate)) {
+            return candidate.string();
+        }
+    }
+    return candidates.empty() ? "" : candidates.front().string();
 }
 
 void WriteRuntimeFeaturesJson(
@@ -224,12 +237,14 @@ double ReadModelProbability() {
         L"runtime_features.json",
     });
     const wstring outputPath = (exeDir / L"ai_prediction.txt").wstring();
+    const wstring pythonExe = WidenAscii(g_config.GetString("PYTHON_EXE", "python"));
 
     const wstring command =
-        L"cmd /C python \"" + scriptPath +
+        L"cmd.exe /S /C \"\"" + pythonExe +
+        L"\" \"" + scriptPath +
         L"\" --input \"" + inputPath +
         L"\" --model \"" + modelPath +
-        L"\" > \"" + outputPath + L"\"";
+        L"\" > \"" + outputPath + L"\"\"";
 
     vector<wchar_t> cmdBuffer(command.begin(), command.end());
     cmdBuffer.push_back(L'\0');
@@ -780,8 +795,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 }
 
 int main() {
-    g_config.LoadFromFile("config.txt");
-    g_storage.Open("monitor.db");
+    const fs::path exeDir = GetExecutableDir();
+    const string configPath = ResolveExistingPathString({
+        exeDir / L"config.txt",
+        exeDir.parent_path() / L"config.txt",
+        exeDir.parent_path().parent_path() / L"config.txt",
+        fs::path("config.txt"),
+    });
+    g_config.LoadFromFile(configPath);
+    g_storage.Open((exeDir / L"monitor.db").string());
     g_pipeline.Start(
         &g_storage,
         static_cast<size_t>(max(1, g_config.GetInt("PIPELINE_BATCH_SIZE", 8))),

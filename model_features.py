@@ -112,6 +112,8 @@ def predict_probability_from_runtime_file(input_path: str, model_path: str) -> f
     window, disk_th = load_runtime_window(input_path)
     features = build_features(window, disk_th).reshape(1, -1)
     model = joblib.load(model_path)
+    if hasattr(model, "n_jobs"):
+        model.n_jobs = 1
 
     if hasattr(model, "predict_proba"):
         probability = float(model.predict_proba(features)[0][1]) * 100.0

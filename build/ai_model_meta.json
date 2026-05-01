@@ -1,8 +1,8 @@
 {
   "window": 8,
   "horizon": 3,
-  "cpu_threshold": 85,
-  "mem_threshold": 90,
+  "cpu_threshold": 80,
+  "mem_threshold": 85,
   "disk_threshold": 8,
   "label_cutoff": 0.589634328358209,
   "rows": 300,
