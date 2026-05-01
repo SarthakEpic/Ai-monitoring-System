@@ -1,6 +1,9 @@
-import argparse
+from __future__ import annotations
 
-from model_features import predict_probability_from_runtime_file
+import argparse
+import json
+
+from model_features import build_prediction_payload
 
 
 def main() -> int:
@@ -11,8 +14,8 @@ def main() -> int:
     parser.add_argument("--model", default="ai_model.joblib")
     args = parser.parse_args()
 
-    probability = predict_probability_from_runtime_file(args.input, args.model)
-    print(f"{probability:.4f}")
+    payload = build_prediction_payload(args.input, args.model)
+    print(json.dumps(payload, indent=2))
     return 0
 
 
