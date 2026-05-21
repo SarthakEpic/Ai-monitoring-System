@@ -26,6 +26,10 @@ add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
         "${CMAKE_SOURCE_DIR}/predict_model.py"
         "${CMAKE_SOURCE_DIR}/model_features.py"
         "${CMAKE_SOURCE_DIR}/labeling.py"
+        "${CMAKE_SOURCE_DIR}/set_training_label.py"
+        "${CMAKE_SOURCE_DIR}/training_data_summary.py"
+        "${CMAKE_SOURCE_DIR}/training_label.txt"
+        "${CMAKE_SOURCE_DIR}/DATA_COLLECTION.md"
         "${CMAKE_SOURCE_DIR}/requirements.txt"
         "$<TARGET_FILE_DIR:PredictiveAutoHeal>"
 )

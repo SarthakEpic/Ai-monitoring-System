@@ -20,6 +20,7 @@ struct SystemSnapshot {
     double netDownKBps = 0.0;
     double netUpKBps = 0.0;
     int processCount = 0;
+    std::string scenarioLabel = "auto";
     ProcessSummary topProcess;
 };
 

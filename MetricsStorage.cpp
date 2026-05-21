@@ -44,6 +44,7 @@ bool MetricsStorage::EnsureSchema() {
         "net_down_kbps REAL DEFAULT 0, "
         "net_up_kbps REAL DEFAULT 0, "
         "process_count INTEGER DEFAULT 0, "
+        "scenario_label TEXT DEFAULT 'auto', "
         "top_process TEXT DEFAULT '', "
         "top_process_cpu REAL DEFAULT 0, "
         "top_process_mem REAL DEFAULT 0);";
@@ -57,6 +58,7 @@ bool MetricsStorage::EnsureSchema() {
     return EnsureColumn("net_down_kbps", "REAL DEFAULT 0") &&
            EnsureColumn("net_up_kbps", "REAL DEFAULT 0") &&
            EnsureColumn("process_count", "INTEGER DEFAULT 0") &&
+           EnsureColumn("scenario_label", "TEXT DEFAULT 'auto'") &&
            EnsureColumn("top_process", "TEXT DEFAULT ''") &&
            EnsureColumn("top_process_cpu", "REAL DEFAULT 0") &&
            EnsureColumn("top_process_mem", "REAL DEFAULT 0");
@@ -101,8 +103,8 @@ void MetricsStorage::LogBatch(const vector<SystemSnapshot>& snapshots) {
 
 bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots) {
     const char* insertSql =
-        "INSERT INTO metrics(time, cpu, mem, disk, net_down_kbps, net_up_kbps, process_count, top_process, top_process_cpu, top_process_mem) "
-        "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);";
+        "INSERT INTO metrics(time, cpu, mem, disk, net_down_kbps, net_up_kbps, process_count, scenario_label, top_process, top_process_cpu, top_process_mem) "
+        "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);";
 
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -125,9 +127,10 @@ bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots)
         sqlite3_bind_double(stmt, 5, snapshot.netDownKBps);
         sqlite3_bind_double(stmt, 6, snapshot.netUpKBps);
         sqlite3_bind_int(stmt, 7, snapshot.processCount);
-        sqlite3_bind_text(stmt, 8, snapshot.topProcess.name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_double(stmt, 9, snapshot.topProcess.cpuPercent);
-        sqlite3_bind_double(stmt, 10, snapshot.topProcess.memoryMB);
+        sqlite3_bind_text(stmt, 8, snapshot.scenarioLabel.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 9, snapshot.topProcess.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt, 10, snapshot.topProcess.cpuPercent);
+        sqlite3_bind_double(stmt, 11, snapshot.topProcess.memoryMB);
 
         if (sqlite3_step(stmt) != SQLITE_DONE) {
             ok = false;
