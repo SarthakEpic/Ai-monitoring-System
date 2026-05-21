@@ -66,6 +66,7 @@ string g_aiSource = "WARMING UP";
 string g_aiClass = "UNKNOWN";
 string g_aiReason = "Collecting baseline";
 string g_recommendedAction = "monitor_only";
+string g_scenarioLabel = "auto";
 string g_topProcessName = "N/A";
 string g_decisionSummary = "System stable";
 string g_decisionReason = "Collecting baseline";
@@ -174,6 +175,39 @@ string ResolvePerformanceMode() {
         mode = "LOW_END";
     }
     return mode;
+}
+
+wstring GetExecutableDir();
+string ResolveExistingPathString(const vector<fs::path>& candidates);
+
+string NormalizeScenarioLabel(string label) {
+    label = ToUpperAscii(label);
+    for (char& ch : label) {
+        if (ch == '-' || ch == ' ') ch = '_';
+    }
+
+    if (label == "NORMAL" || label == "WARNING" || label == "CRITICAL" || label == "RECOVERY") {
+        return label;
+    }
+    return "AUTO";
+}
+
+string ReadScenarioLabel() {
+    const fs::path exeDir = GetExecutableDir();
+    const string labelFileName = g_config.GetString("TRAINING_LABEL_FILE", "training_label.txt");
+    const fs::path labelPath = ResolveExistingPathString({
+        fs::current_path() / fs::path(labelFileName),
+        exeDir / fs::path(labelFileName),
+        exeDir.parent_path() / fs::path(labelFileName),
+        exeDir.parent_path().parent_path() / fs::path(labelFileName),
+    });
+
+    ifstream file(labelPath);
+    if (!file) return "AUTO";
+
+    string label;
+    getline(file, label);
+    return NormalizeScenarioLabel(label);
 }
 
 wstring WidenAscii(const string& text) {
@@ -812,6 +846,7 @@ void MonitorThread(HWND hwnd) {
         if (!g_running) break;
 
         SystemSnapshot snapshot = collector.Collect();
+        snapshot.scenarioLabel = ReadScenarioLabel();
 
         deque<double> cpuCopy, memCopy, diskCopy, netCopy, processCopy;
         double aiProbLocal = 0.0;
@@ -830,6 +865,7 @@ void MonitorThread(HWND hwnd) {
             g_netDown = snapshot.netDownKBps;
             g_netUp = snapshot.netUpKBps;
             g_processCount = snapshot.processCount;
+            g_scenarioLabel = snapshot.scenarioLabel;
             g_topProcessPid = snapshot.topProcess.pid;
             g_topProcessName = snapshot.topProcess.name;
             g_topProcessCpu = snapshot.topProcess.cpuPercent;
@@ -1036,6 +1072,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             snapshot.netDownKBps = g_netDown;
             snapshot.netUpKBps = g_netUp;
             snapshot.processCount = g_processCount;
+            snapshot.scenarioLabel = g_scenarioLabel;
             snapshot.topProcess.pid = g_topProcessPid;
             snapshot.topProcess.name = g_topProcessName;
             snapshot.topProcess.cpuPercent = g_topProcessCpu;
@@ -1092,6 +1129,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawTextAt(memDC, 18, 606, "MODE  " + FormatModeLabel(performanceMode), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 630, "MODEL " + to_string(aiPredictIntervalTicks) + " sec", RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 654, string("DB    ") + (storageReady ? "ACTIVE" : "OFFLINE"), storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
+        DrawTextAt(memDC, 18, 678, "LABEL " + snapshot.scenarioLabel, RGB(170, 180, 195), gFontSmall);
 
         int mainX = sidebarW + pad;
         int mainW = client.right - mainX - pad;
