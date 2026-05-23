@@ -122,7 +122,7 @@
     <PostBuildEvent>
       <Message>	</Message>
       <Command>setlocal
-"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/AI_Driven/PredictiveAutoHeal/config.txt D:/AI_Driven/PredictiveAutoHeal/predict_model.py D:/AI_Driven/PredictiveAutoHeal/model_features.py D:/AI_Driven/PredictiveAutoHeal/labeling.py D:/AI_Driven/PredictiveAutoHeal/requirements.txt D:/AI_Driven/PredictiveAutoHeal/build/Debug
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/AI_Driven/PredictiveAutoHeal/config.txt D:/AI_Driven/PredictiveAutoHeal/predict_model.py D:/AI_Driven/PredictiveAutoHeal/model_features.py D:/AI_Driven/PredictiveAutoHeal/labeling.py D:/AI_Driven/PredictiveAutoHeal/set_training_label.py D:/AI_Driven/PredictiveAutoHeal/training_data_summary.py D:/AI_Driven/PredictiveAutoHeal/training_label.txt D:/AI_Driven/PredictiveAutoHeal/DATA_COLLECTION.md D:/AI_Driven/PredictiveAutoHeal/requirements.txt D:/AI_Driven/PredictiveAutoHeal/build/Debug
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -197,7 +197,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <PostBuildEvent>
       <Message>	</Message>
       <Command>setlocal
-"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/AI_Driven/PredictiveAutoHeal/config.txt D:/AI_Driven/PredictiveAutoHeal/predict_model.py D:/AI_Driven/PredictiveAutoHeal/model_features.py D:/AI_Driven/PredictiveAutoHeal/labeling.py D:/AI_Driven/PredictiveAutoHeal/requirements.txt D:/AI_Driven/PredictiveAutoHeal/build/Release
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/AI_Driven/PredictiveAutoHeal/config.txt D:/AI_Driven/PredictiveAutoHeal/predict_model.py D:/AI_Driven/PredictiveAutoHeal/model_features.py D:/AI_Driven/PredictiveAutoHeal/labeling.py D:/AI_Driven/PredictiveAutoHeal/set_training_label.py D:/AI_Driven/PredictiveAutoHeal/training_data_summary.py D:/AI_Driven/PredictiveAutoHeal/training_label.txt D:/AI_Driven/PredictiveAutoHeal/DATA_COLLECTION.md D:/AI_Driven/PredictiveAutoHeal/requirements.txt D:/AI_Driven/PredictiveAutoHeal/build/Release
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -272,7 +272,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <PostBuildEvent>
       <Message>	</Message>
       <Command>setlocal
-"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/AI_Driven/PredictiveAutoHeal/config.txt D:/AI_Driven/PredictiveAutoHeal/predict_model.py D:/AI_Driven/PredictiveAutoHeal/model_features.py D:/AI_Driven/PredictiveAutoHeal/labeling.py D:/AI_Driven/PredictiveAutoHeal/requirements.txt D:/AI_Driven/PredictiveAutoHeal/build/MinSizeRel
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/AI_Driven/PredictiveAutoHeal/config.txt D:/AI_Driven/PredictiveAutoHeal/predict_model.py D:/AI_Driven/PredictiveAutoHeal/model_features.py D:/AI_Driven/PredictiveAutoHeal/labeling.py D:/AI_Driven/PredictiveAutoHeal/set_training_label.py D:/AI_Driven/PredictiveAutoHeal/training_data_summary.py D:/AI_Driven/PredictiveAutoHeal/training_label.txt D:/AI_Driven/PredictiveAutoHeal/DATA_COLLECTION.md D:/AI_Driven/PredictiveAutoHeal/requirements.txt D:/AI_Driven/PredictiveAutoHeal/build/MinSizeRel
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -346,7 +346,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <PostBuildEvent>
       <Message>	</Message>
       <Command>setlocal
-"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/AI_Driven/PredictiveAutoHeal/config.txt D:/AI_Driven/PredictiveAutoHeal/predict_model.py D:/AI_Driven/PredictiveAutoHeal/model_features.py D:/AI_Driven/PredictiveAutoHeal/labeling.py D:/AI_Driven/PredictiveAutoHeal/requirements.txt D:/AI_Driven/PredictiveAutoHeal/build/RelWithDebInfo
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/AI_Driven/PredictiveAutoHeal/config.txt D:/AI_Driven/PredictiveAutoHeal/predict_model.py D:/AI_Driven/PredictiveAutoHeal/model_features.py D:/AI_Driven/PredictiveAutoHeal/labeling.py D:/AI_Driven/PredictiveAutoHeal/set_training_label.py D:/AI_Driven/PredictiveAutoHeal/training_data_summary.py D:/AI_Driven/PredictiveAutoHeal/training_label.txt D:/AI_Driven/PredictiveAutoHeal/DATA_COLLECTION.md D:/AI_Driven/PredictiveAutoHeal/requirements.txt D:/AI_Driven/PredictiveAutoHeal/build/RelWithDebInfo
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
