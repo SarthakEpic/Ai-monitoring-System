@@ -206,6 +206,70 @@ def load_runtime_window(input_path: str) -> Tuple[np.ndarray, Dict[str, int]]:
     return window, thresholds
 
 
+def _window_pressure_series(window: np.ndarray, thresholds: Dict[str, int]) -> np.ndarray:
+    return np.asarray(
+        [
+            _resource_pressure(float(row[0]), float(row[1]), float(row[2]), thresholds["disk"], thresholds["cpu"], thresholds["mem"])
+            for row in window
+        ],
+        dtype=float,
+    )
+
+
+def _normalize_probabilities(class_probabilities: Dict[str, float]) -> Dict[str, float]:
+    total = sum(max(0.0, value) for value in class_probabilities.values())
+    if total <= 0.0:
+        return class_probabilities
+    return {label: max(0.0, value) / total for label, value in class_probabilities.items()}
+
+
+def calibrate_class_probabilities(
+    window: np.ndarray,
+    thresholds: Dict[str, int],
+    class_probabilities: Dict[str, float],
+) -> Dict[str, float]:
+    pressure = _window_pressure_series(window, thresholds)
+    pressure_start = float(pressure[0])
+    pressure_end = float(pressure[-1])
+    pressure_peak = float(pressure.max())
+    pressure_drop = float(max(0.0, pressure_peak - pressure_end))
+    recent_drop = float(max(0.0, pressure[-4:-2].mean() - pressure[-2:].mean()))
+
+    cpu = window[:, 0]
+    mem = window[:, 1]
+    disk = window[:, 2]
+    cpu_recovery = float(cpu[:2].mean() - cpu[-2:].mean())
+    mem_recovery = float(mem[:2].mean() - mem[-2:].mean())
+    disk_recovery = float(disk[-2:].mean() - disk[:2].mean())
+
+    adjusted = dict(class_probabilities)
+    critical_now = (
+        pressure_end >= 82.0
+        or float(cpu[-1]) >= 96.0
+        or float(mem[-1]) >= 96.0
+        or float(disk[-1]) <= max(3.0, thresholds["disk"] * 0.35)
+    )
+    recovering = (
+        pressure_peak >= 55.0
+        and pressure_drop >= 10.0
+        and pressure_end <= pressure_start - 7.0
+        and recent_drop >= 3.0
+        and pressure_end < 78.0
+        and (cpu_recovery >= 7.0 or mem_recovery >= 5.0 or disk_recovery >= 2.0)
+    )
+
+    if critical_now:
+        adjusted["CRITICAL"] = adjusted.get("CRITICAL", 0.0) + 0.18
+        adjusted["WARNING"] = max(0.0, adjusted.get("WARNING", 0.0) - 0.08)
+        adjusted["RECOVERY"] = max(0.0, adjusted.get("RECOVERY", 0.0) - 0.05)
+    elif recovering:
+        adjusted["RECOVERY"] = adjusted.get("RECOVERY", 0.0) + 0.20
+        adjusted["WARNING"] = max(0.0, adjusted.get("WARNING", 0.0) - 0.10)
+        adjusted["CRITICAL"] = max(0.0, adjusted.get("CRITICAL", 0.0) - 0.05)
+
+    return _normalize_probabilities(adjusted)
+
+
 def explain_prediction(window: np.ndarray, thresholds: Dict[str, int], predicted_class: str) -> str:
     cpu = float(window[-1, 0])
     mem = float(window[-1, 1])
@@ -258,6 +322,7 @@ def build_prediction_payload(input_path: str, model_path: str) -> Dict[str, obje
             if 0 <= cls < len(LABELS):
                 class_probabilities[LABELS[cls]] = float(prob)
 
+        class_probabilities = calibrate_class_probabilities(window, thresholds, class_probabilities)
         predicted_class = max(class_probabilities, key=class_probabilities.get)
         confidence = max(class_probabilities.values()) * 100.0
         probability = sum(class_probabilities[label] * label_to_risk(label) for label in LABELS)

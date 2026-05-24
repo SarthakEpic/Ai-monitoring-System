@@ -111,6 +111,10 @@ model_report.json
 model_report.txt
 ```
 
+The reliability report includes priority metrics for `CRITICAL` and `RECOVERY`.
+Use those class-level precision, recall, and F1 scores when comparing model
+changes; overall accuracy can hide weak recovery detection.
+
 If training reports that there are not enough rows, leave the app running longer and try again.
 
 ## Run Tests
@@ -178,4 +182,3 @@ The portable app creates `monitor.db` next to the executable on the target devic
 - The model expects an 8-sample runtime window.
 - If model files are missing or prediction fails, the C++ app can still rely on threshold and anomaly scoring.
 - `SAFE_MODE=1` keeps automated healing behavior conservative.
-

@@ -30,6 +30,11 @@ When you stop the stress workload, collect recovery:
 python set_training_label.py recovery
 ```
 
+Recovery examples are most useful when they start under visible pressure and
+then improve over several samples. Do not switch to `recovery` after the system
+is already fully idle; capture the transition down from CPU, memory, disk, or
+process pressure.
+
 Return to default when done:
 
 ```powershell
