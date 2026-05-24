@@ -19,6 +19,16 @@ from labeling import ID_TO_LABEL, LABELS, LABEL_TO_ID, LabelThresholds, label_fu
 from model_features import FEATURE_NAMES, WINDOW, build_features, load_thresholds
 
 HORIZON = 5
+PRIORITY_SAMPLE_WEIGHTS = {
+    "NORMAL": 1.0,
+    "WARNING": 1.0,
+    "CRITICAL": 1.5,
+    "RECOVERY": 2.35,
+}
+PRIORITY_AUGMENT_COPIES = {
+    "CRITICAL": 2,
+    "RECOVERY": 2,
+}
 
 
 def _read_metrics(db_path: str) -> pd.DataFrame:
@@ -49,6 +59,46 @@ def _class_distribution(labels: np.ndarray) -> Dict[str, int]:
     return {label: int(np.sum(labels == LABEL_TO_ID[label])) for label in LABELS}
 
 
+def _sample_weights(labels: np.ndarray) -> np.ndarray:
+    return np.asarray(
+        [PRIORITY_SAMPLE_WEIGHTS.get(ID_TO_LABEL[int(label)], 1.0) for label in labels],
+        dtype=float,
+    )
+
+
+def _augment_priority_samples(X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(42)
+    feature_std = np.std(X, axis=0)
+    noise_scale = np.where(feature_std > 0.0, feature_std * 0.015, 0.0)
+    extra_X: List[np.ndarray] = []
+    extra_y: List[np.ndarray] = []
+
+    for label, copies in PRIORITY_AUGMENT_COPIES.items():
+        class_id = LABEL_TO_ID[label]
+        class_X = X[y == class_id]
+        if len(class_X) == 0:
+            continue
+        for _ in range(copies):
+            noise = rng.normal(0.0, noise_scale, size=class_X.shape)
+            extra_X.append(class_X + noise)
+            extra_y.append(np.full(len(class_X), class_id, dtype=int))
+
+    if not extra_X:
+        return X, y
+    return np.vstack([X, *extra_X]), np.concatenate([y, *extra_y])
+
+
+def _priority_metrics(report: Dict[str, object]) -> Dict[str, float]:
+    metrics: Dict[str, float] = {}
+    for label in ("CRITICAL", "RECOVERY"):
+        label_report = report.get(label, {})
+        if isinstance(label_report, dict):
+            metrics[f"{label.lower()}_precision"] = float(label_report.get("precision", 0.0))
+            metrics[f"{label.lower()}_recall"] = float(label_report.get("recall", 0.0))
+            metrics[f"{label.lower()}_f1"] = float(label_report.get("f1-score", 0.0))
+    return metrics
+
+
 def _write_text_report(path: str, report: Dict[str, object]) -> None:
     lines = [
         "AI Model Reliability Report",
@@ -64,6 +114,15 @@ def _write_text_report(path: str, report: Dict[str, object]) -> None:
     ]
     for label, count in report["class_distribution"].items():
         lines.append(f"- {label}: {count}")
+    lines.extend(["", "Training sample weights:"])
+    for label, weight in report["sample_weights"].items():
+        lines.append(f"- {label}: {weight:.2f}")
+    lines.extend(["", "Priority augmentation copies:"])
+    for label, copies in report["priority_augment_copies"].items():
+        lines.append(f"- {label}: {copies}")
+    lines.extend(["", "Priority reliability metrics:"])
+    for metric, value in report["priority_metrics"].items():
+        lines.append(f"- {metric}: {value:.4f}")
     lines.extend(["", "Confusion matrix labels: " + ", ".join(report["labels"]), str(report["confusion_matrix"])])
     lines.extend(["", "Top feature importance:"])
     for item in report["top_features"]:
@@ -123,14 +182,20 @@ def main() -> int:
     )
 
     model = RandomForestClassifier(
-        n_estimators=420,
-        max_depth=12,
-        min_samples_leaf=2,
-        class_weight="balanced_subsample",
+        n_estimators=640,
+        max_depth=14,
+        min_samples_leaf=1,
+        class_weight={
+            LABEL_TO_ID["NORMAL"]: 1.0,
+            LABEL_TO_ID["WARNING"]: 1.0,
+            LABEL_TO_ID["CRITICAL"]: 1.5,
+            LABEL_TO_ID["RECOVERY"]: 2.0,
+        },
         random_state=42,
         n_jobs=1,
     )
-    model.fit(X_train, y_train)
+    X_fit, y_fit = _augment_priority_samples(X_train, y_train)
+    model.fit(X_fit, y_fit, sample_weight=_sample_weights(y_fit))
 
     preds = model.predict(X_test)
     accuracy = accuracy_score(y_test, preds)
@@ -153,6 +218,7 @@ def main() -> int:
         zero_division=0,
     )
     matrix = confusion_matrix(y_test, preds, labels=present_classes).tolist()
+    priority_metrics = _priority_metrics(report_dict)
 
     importances = getattr(model, "feature_importances_", np.zeros(len(FEATURE_NAMES)))
     top_features = sorted(
@@ -180,6 +246,8 @@ def main() -> int:
         "feature_count": len(FEATURE_NAMES),
         "features": FEATURE_NAMES,
         "labels": LABELS,
+        "sample_weights": PRIORITY_SAMPLE_WEIGHTS,
+        "priority_augment_copies": PRIORITY_AUGMENT_COPIES,
     }
 
     report: Dict[str, object] = {
@@ -190,6 +258,7 @@ def main() -> int:
         "confusion_matrix": matrix,
         "classification_report": report_dict,
         "classification_report_text": report_text,
+        "priority_metrics": priority_metrics,
         "top_features": top_features,
     }
 
@@ -202,6 +271,8 @@ def main() -> int:
     print(f"Rows used: {len(df)}")
     print(f"Samples: {len(X_np)}")
     print(f"Accuracy: {accuracy:.4f}")
+    for metric, value in priority_metrics.items():
+        print(f"{metric}: {value:.4f}")
     print(report_text)
     print(f"Saved model to {args.model}")
     print(f"Saved meta to {args.meta}")
