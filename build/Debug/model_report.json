@@ -1,0 +1,228 @@
+{
+  "contract": "ai_reliability_v2",
+  "generated_at": "2026-05-24T18:28:46.511288+00:00",
+  "window": 8,
+  "horizon": 5,
+  "cpu_threshold": 80,
+  "mem_threshold": 85,
+  "disk_threshold": 8,
+  "rows": 1648,
+  "samples": 1636,
+  "feature_count": 61,
+  "features": [
+    "cpu_last",
+    "cpu_mean",
+    "cpu_std",
+    "cpu_min",
+    "cpu_max",
+    "cpu_delta",
+    "cpu_slope",
+    "cpu_range",
+    "mem_last",
+    "mem_mean",
+    "mem_std",
+    "mem_min",
+    "mem_max",
+    "mem_delta",
+    "mem_slope",
+    "mem_range",
+    "disk_last",
+    "disk_mean",
+    "disk_std",
+    "disk_min",
+    "disk_max",
+    "disk_delta",
+    "disk_slope",
+    "disk_range",
+    "net_last",
+    "net_mean",
+    "net_std",
+    "net_min",
+    "net_max",
+    "net_delta",
+    "net_slope",
+    "net_range",
+    "process_last",
+    "process_mean",
+    "process_std",
+    "process_min",
+    "process_max",
+    "process_delta",
+    "process_slope",
+    "process_range",
+    "cpu_mem_gap",
+    "mem_disk_gap",
+    "cpu_disk_gap",
+    "disk_pressure",
+    "memory_pressure",
+    "cpu_pressure",
+    "pressure_start",
+    "pressure_end",
+    "pressure_peak",
+    "pressure_delta",
+    "pressure_drop",
+    "recent_pressure_drop",
+    "cpu_recovery",
+    "mem_recovery",
+    "disk_recovery",
+    "critical_pressure_signal",
+    "net_spike",
+    "process_growth",
+    "resource_pressure",
+    "recovery_signal",
+    "recovery_momentum"
+  ],
+  "labels": [
+    "NORMAL",
+    "WARNING",
+    "CRITICAL",
+    "RECOVERY"
+  ],
+  "sample_weights": {
+    "NORMAL": 1.0,
+    "WARNING": 1.0,
+    "CRITICAL": 1.5,
+    "RECOVERY": 2.35
+  },
+  "priority_augment_copies": {
+    "CRITICAL": 2,
+    "RECOVERY": 2
+  },
+  "accuracy": 0.8533007334963325,
+  "class_distribution": {
+    "NORMAL": 100,
+    "WARNING": 935,
+    "CRITICAL": 450,
+    "RECOVERY": 151
+  },
+  "test_class_distribution": {
+    "NORMAL": 25,
+    "WARNING": 234,
+    "CRITICAL": 112,
+    "RECOVERY": 38
+  },
+  "confusion_matrix": [
+    [
+      22,
+      1,
+      2,
+      0
+    ],
+    [
+      2,
+      223,
+      0,
+      9
+    ],
+    [
+      2,
+      14,
+      91,
+      5
+    ],
+    [
+      0,
+      20,
+      5,
+      13
+    ]
+  ],
+  "classification_report": {
+    "NORMAL": {
+      "precision": 0.8461538461538461,
+      "recall": 0.88,
+      "f1-score": 0.8627450980392157,
+      "support": 25.0
+    },
+    "WARNING": {
+      "precision": 0.8643410852713178,
+      "recall": 0.9529914529914529,
+      "f1-score": 0.9065040650406504,
+      "support": 234.0
+    },
+    "CRITICAL": {
+      "precision": 0.9285714285714286,
+      "recall": 0.8125,
+      "f1-score": 0.8666666666666667,
+      "support": 112.0
+    },
+    "RECOVERY": {
+      "precision": 0.48148148148148145,
+      "recall": 0.34210526315789475,
+      "f1-score": 0.4,
+      "support": 38.0
+    },
+    "accuracy": 0.8533007334963325,
+    "macro avg": {
+      "precision": 0.7801369603695184,
+      "recall": 0.7468991790373369,
+      "f1-score": 0.7589789574366331,
+      "support": 409.0
+    },
+    "weighted avg": {
+      "precision": 0.8452468371726914,
+      "recall": 0.8533007334963325,
+      "f1-score": 0.8458612355431766,
+      "support": 409.0
+    }
+  },
+  "classification_report_text": "              precision    recall  f1-score   support\n\n      NORMAL     0.8462    0.8800    0.8627        25\n     WARNING     0.8643    0.9530    0.9065       234\n    CRITICAL     0.9286    0.8125    0.8667       112\n    RECOVERY     0.4815    0.3421    0.4000        38\n\n    accuracy                         0.8533       409\n   macro avg     0.7801    0.7469    0.7590       409\nweighted avg     0.8452    0.8533    0.8459       409\n",
+  "priority_metrics": {
+    "critical_precision": 0.9285714285714286,
+    "critical_recall": 0.8125,
+    "critical_f1": 0.8666666666666667,
+    "recovery_precision": 0.48148148148148145,
+    "recovery_recall": 0.34210526315789475,
+    "recovery_f1": 0.4
+  },
+  "top_features": [
+    {
+      "feature": "pressure_start",
+      "importance": 0.05482444736312633
+    },
+    {
+      "feature": "cpu_mean",
+      "importance": 0.04712487058942345
+    },
+    {
+      "feature": "cpu_disk_gap",
+      "importance": 0.04167630566318365
+    },
+    {
+      "feature": "cpu_min",
+      "importance": 0.038908856647972105
+    },
+    {
+      "feature": "pressure_end",
+      "importance": 0.03213585403082756
+    },
+    {
+      "feature": "resource_pressure",
+      "importance": 0.031552197276921164
+    },
+    {
+      "feature": "cpu_last",
+      "importance": 0.030370708481733052
+    },
+    {
+      "feature": "critical_pressure_signal",
+      "importance": 0.027966707685608248
+    },
+    {
+      "feature": "mem_disk_gap",
+      "importance": 0.02627868628847216
+    },
+    {
+      "feature": "pressure_peak",
+      "importance": 0.025701406893074
+    },
+    {
+      "feature": "cpu_range",
+      "importance": 0.02537712362132801
+    },
+    {
+      "feature": "cpu_mem_gap",
+      "importance": 0.025129740451239932
+    }
+  ]
+}

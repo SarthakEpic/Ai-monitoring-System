@@ -1,14 +1,14 @@
 {
   "contract": "ai_reliability_v2",
-  "generated_at": "2026-05-01T19:45:33.019890+00:00",
+  "generated_at": "2026-05-24T18:28:46.511288+00:00",
   "window": 8,
   "horizon": 5,
   "cpu_threshold": 80,
   "mem_threshold": 85,
   "disk_threshold": 8,
-  "rows": 300,
-  "samples": 288,
-  "feature_count": 50,
+  "rows": 1648,
+  "samples": 1636,
+  "feature_count": 61,
   "features": [
     "cpu_last",
     "cpu_mean",
@@ -56,15 +56,36 @@
     "disk_pressure",
     "memory_pressure",
     "cpu_pressure",
+    "pressure_start",
+    "pressure_end",
+    "pressure_peak",
+    "pressure_delta",
+    "pressure_drop",
+    "recent_pressure_drop",
+    "cpu_recovery",
+    "mem_recovery",
+    "disk_recovery",
+    "critical_pressure_signal",
     "net_spike",
     "process_growth",
     "resource_pressure",
-    "recovery_signal"
+    "recovery_signal",
+    "recovery_momentum"
   ],
   "labels": [
     "NORMAL",
     "WARNING",
     "CRITICAL",
     "RECOVERY"
-  ]
+  ],
+  "sample_weights": {
+    "NORMAL": 1.0,
+    "WARNING": 1.0,
+    "CRITICAL": 1.5,
+    "RECOVERY": 2.35
+  },
+  "priority_augment_copies": {
+    "CRITICAL": 2,
+    "RECOVERY": 2
+  }
 }
