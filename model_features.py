@@ -23,10 +23,21 @@ FEATURE_NAMES = [f"{series}_{stat}" for series in SERIES_NAMES for stat in STAT_
     "disk_pressure",
     "memory_pressure",
     "cpu_pressure",
+    "pressure_start",
+    "pressure_end",
+    "pressure_peak",
+    "pressure_delta",
+    "pressure_drop",
+    "recent_pressure_drop",
+    "cpu_recovery",
+    "mem_recovery",
+    "disk_recovery",
+    "critical_pressure_signal",
     "net_spike",
     "process_growth",
     "resource_pressure",
     "recovery_signal",
+    "recovery_momentum",
 ]
 
 
@@ -80,6 +91,20 @@ def _pressure(value: float, threshold: int) -> float:
     return float(min(100.0, max(0.0, (value / max(1, threshold)) * 100.0)))
 
 
+def _disk_pressure(value: float, threshold: int) -> float:
+    if value >= threshold:
+        return 0.0
+    return float(min(100.0, max(0.0, (threshold - value) / max(1, threshold) * 100.0)))
+
+
+def _resource_pressure(cpu_value: float, mem_value: float, disk_value: float, disk_th: int, cpu_th: int, mem_th: int) -> float:
+    return float(
+        (_pressure(cpu_value, cpu_th) * 0.42)
+        + (_pressure(mem_value, mem_th) * 0.42)
+        + (_disk_pressure(disk_value, disk_th) * 0.16)
+    )
+
+
 def build_features(window: np.ndarray, disk_th: int, cpu_th: int = DEFAULT_CPU_TH, mem_th: int = DEFAULT_MEM_TH) -> np.ndarray:
     cpu = window[:, 0]
     mem = window[:, 1]
@@ -87,14 +112,29 @@ def build_features(window: np.ndarray, disk_th: int, cpu_th: int = DEFAULT_CPU_T
     net = window[:, 3] if window.shape[1] > 3 else np.zeros(len(window), dtype=float)
     proc = window[:, 4] if window.shape[1] > 4 else np.zeros(len(window), dtype=float)
 
-    disk_pressure = 0.0
-    if disk[-1] < disk_th:
-        disk_pressure = float(max(0.0, (disk_th - disk[-1]) / max(1, disk_th) * 100.0))
-
+    disk_pressure = _disk_pressure(float(disk[-1]), disk_th)
     cpu_pressure = _pressure(float(cpu[-1]), cpu_th)
     mem_pressure = _pressure(float(mem[-1]), mem_th)
-    resource_pressure = (cpu_pressure * 0.42) + (mem_pressure * 0.42) + (disk_pressure * 0.16)
-    recovery_signal = max(0.0, float(cpu[0] - cpu[-1])) * 0.4 + max(0.0, float(mem[0] - mem[-1])) * 0.4
+    pressure_series = np.asarray(
+        [
+            _resource_pressure(float(c), float(m), float(d), disk_th, cpu_th, mem_th)
+            for c, m, d in zip(cpu, mem, disk)
+        ],
+        dtype=float,
+    )
+    pressure_start = float(pressure_series[0])
+    pressure_end = float(pressure_series[-1])
+    pressure_peak = float(pressure_series.max())
+    pressure_delta = float(pressure_end - pressure_start)
+    pressure_drop = float(max(0.0, pressure_peak - pressure_end))
+    recent_pressure_drop = float(max(0.0, pressure_series[-4:-2].mean() - pressure_series[-2:].mean()))
+    cpu_recovery = float(max(0.0, cpu[:2].mean() - cpu[-2:].mean()))
+    mem_recovery = float(max(0.0, mem[:2].mean() - mem[-2:].mean()))
+    disk_recovery = float(max(0.0, disk[-2:].mean() - disk[:2].mean()))
+    critical_pressure_signal = float(max(0.0, pressure_peak - 80.0))
+    resource_pressure = pressure_end
+    recovery_signal = (cpu_recovery * 0.35) + (mem_recovery * 0.35) + (pressure_drop * 0.3)
+    recovery_momentum = float(max(0.0, -slope(pressure_series)))
 
     return np.array(
         _stats(cpu)
@@ -109,10 +149,21 @@ def build_features(window: np.ndarray, disk_th: int, cpu_th: int = DEFAULT_CPU_T
             disk_pressure,
             mem_pressure,
             cpu_pressure,
+            pressure_start,
+            pressure_end,
+            pressure_peak,
+            pressure_delta,
+            pressure_drop,
+            recent_pressure_drop,
+            cpu_recovery,
+            mem_recovery,
+            disk_recovery,
+            critical_pressure_signal,
             float(max(0.0, net[-1] - np.median(net))),
             float(proc[-1] - proc[0]),
             float(resource_pressure),
             float(recovery_signal),
+            float(recovery_momentum),
         ],
         dtype=float,
     )
