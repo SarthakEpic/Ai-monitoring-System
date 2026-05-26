@@ -1,181 +1,206 @@
-# PredictiveAutoHeal
+# 💸 Expense Tracker Web
 
-PredictiveAutoHeal is a Windows desktop monitoring tool that collects local system metrics, stores them in SQLite, and combines rule-based thresholds with a Python machine-learning model to estimate reliability risk. It shows CPU, memory, disk, network, process, AI forecast, and decision-engine status in a native Win32 dashboard.
+A lightweight personal expense tracker built with FastAPI and SQLite.  
+Track daily expenses, view spending insights, generate charts, and export reports — all from a clean web interface.
 
-## Features
+---
 
-- Native C++20 Win32 dashboard.
-- CPU, memory, disk, network, process count, and top-process monitoring.
-- SQLite-backed metric history in `monitor.db`.
-- Batched background metric persistence.
-- Configurable threshold and performance profiles.
-- Python model training from collected telemetry.
-- Runtime AI prediction through `predict_model.py`.
-- Risk decision layer that combines thresholds, anomaly signals, and model confidence.
-- Portable deployment layout for copying the built app to another Windows machine.
+## ✨ Features
 
-## Project Structure
+- 🔐 Secure single-user authentication
+- 💰 Add, edit, and delete expenses
+- 🧠 Smart category suggestions
+- 📊 Monthly, yearly, and category-based reports
+- 📈 Spending charts with Matplotlib
+- 📂 CSV export support
+- 🛡️ CSRF protection
+- 🧪 Pytest test coverage
+- 🗄️ SQLite database storage
 
-| Path | Purpose |
-| --- | --- |
-| `main.cpp` | Win32 dashboard, monitoring loop, runtime prediction integration. |
-| `SystemMetrics.*` | System metric collection. |
-| `MetricsStorage.*` | SQLite schema and metric logging. |
-| `MetricsPipeline.*` | Background batching pipeline for metric writes. |
-| `DecisionEngine.*` | Risk scoring and action recommendation logic. |
-| `AppConfig.*` | `config.txt` parsing helpers. |
-| `train_model.py` | Trains the reliability model from `monitor.db`. |
-| `predict_model.py` | Runs prediction for runtime feature JSON. |
-| `model_features.py` | Feature engineering and prediction payload contract. |
-| `labeling.py` | Training label generation. |
-| `test_model_contract.py` | Python unit tests for the model/runtime contract. |
-| `TRANSFER.md` | Portable copy guide. |
-| `portable/` | Ready-to-copy runtime bundle. |
+---
 
-## Requirements
+## 📸 Screenshots
 
-- Windows.
-- Visual Studio 2022 Build Tools or another CMake-compatible MSVC toolchain.
-- CMake 3.20 or newer.
-- Python 3.12 or newer.
-- Python packages from `requirements.txt`:
-  - `numpy`
-  - `pandas`
-  - `scikit-learn`
-  - `joblib`
+> Add your screenshots here after uploading images.
 
-SQLite is bundled in the repository as `sqlite3.c` and `sqlite3.h`.
-
-## Python Setup
-
-Install the Python dependencies:
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+```md
+![Dashboard](screenshots/dashboard.png)
+![Reports](screenshots/reports.png)
 ```
 
-If Python is not available as `python`, update `config.txt`:
+---
 
-```txt
-PYTHON_EXE=C:\Path\To\python.exe
+# 🛠️ Tech Stack
+
+- FastAPI
+- SQLite
+- Jinja2 Templates
+- Matplotlib
+- Pytest
+- HTML/CSS
+
+---
+
+# 📁 Project Structure
+
+```text
+expense-tracker-web/
+│
+├── main.py              # FastAPI routes and app logic
+├── database.py          # SQLite setup and queries
+├── create_user.py       # Generate hashed credentials
+├── templates/           # Jinja2 templates
+├── static/
+│   └── style.css        # Styling
+├── tests/               # Pytest test suite
+├── requirements.txt     # Dependencies
+├── .env.example         # Example environment variables
+├── .gitignore
+└── README.md
 ```
 
-## Build
+---
 
-Open a Developer PowerShell or load the Visual Studio environment first:
+# 🚀 Getting Started
 
-```powershell
-cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" && powershell'
+## 1️⃣ Clone the Repository
+
+```bash
+git clone https://github.com/your-username/expense-tracker-web.git
+cd expense-tracker-web
 ```
 
-Configure and build:
+---
 
-```powershell
-mkdir build
-cd build
-cmake ..
-cmake --build . --config Debug
+## 2️⃣ Create a Virtual Environment
+
+### Windows
+
+```bash
+python -m venv venv
+venv\Scripts\activate
 ```
 
-The executable is created at:
+### Linux / Mac
 
-```txt
-build\Debug\PredictiveAutoHeal.exe
+```bash
+python3 -m venv venv
+source venv/bin/activate
 ```
 
-The post-build step copies runtime files such as `config.txt`, `predict_model.py`, `model_features.py`, `labeling.py`, `requirements.txt`, and model artifacts into the executable directory when they exist.
+---
 
-## Run
+## 3️⃣ Install Dependencies
 
-From the repository root:
-
-```powershell
-.\build\Debug\PredictiveAutoHeal.exe
+```bash
+pip install -r requirements.txt
 ```
 
-The app creates or updates `monitor.db` next to the executable and begins collecting telemetry for the local machine.
+---
 
-## Train The Model
+## 4️⃣ Create Credentials
 
-Run the application first so `monitor.db` has enough metric history. Then train a model:
+Run:
 
-```powershell
-python train_model.py --db build\monitor.db --model build\ai_model.joblib --meta build\ai_model_meta.json
+```bash
+python create_user.py
 ```
 
-Training also writes:
+This generates a local `.env` file containing:
 
-```txt
-model_report.json
-model_report.txt
+```env
+APP_USERNAME=your_username
+APP_PASSWORD_HASH=your_password_hash
+SECRET_KEY=your_secret_key
 ```
 
-If training reports that there are not enough rows, leave the app running longer and try again.
+---
 
-## Run Tests
+# ▶️ Run the Application
 
-```powershell
-python -m unittest test_model_contract.py
+```bash
+uvicorn main:app --reload
 ```
 
-## Configuration
+Open in browser:
 
-Runtime settings live in `config.txt`.
-
-```txt
-CPU_THRESHOLD=80
-MEM_THRESHOLD=85
-DISK_THRESHOLD=8
-PERFORMANCE_MODE=LOW_END
-AI_ALERT_THRESHOLD=70
-AI_ALERT_CLEAR_THRESHOLD=55
-AI_ALERT_TRIGGER_STREAK=2
-AI_ALERT_CLEAR_STREAK=2
-AI_PREDICT_INTERVAL_TICKS=10
-AI_MODEL_TIMEOUT_MS=8000
-AI_MODEL_CACHE_TTL_TICKS=30
-DECISION_WARNING_THRESHOLD=45
-DECISION_CRITICAL_THRESHOLD=65
-PIPELINE_BATCH_SIZE=8
-PIPELINE_FLUSH_MS=2000
-PYTHON_EXE=python
-SAFE_MODE=1
-SERVICE_NAME=Spooler
+```text
+http://127.0.0.1:8000
 ```
 
-Performance modes:
+---
 
-- `LOW_END`: fewer model calls and longer cache lifetime.
-- `BALANCED`: moderate prediction frequency.
-- `HIGH_PERFORMANCE`: more frequent prediction checks.
+# 🧪 Run Tests
 
-## Portable Deployment
-
-Use the `portable/` folder or follow `TRANSFER.md`. A target machine needs:
-
-- `PredictiveAutoHeal.exe`
-- `config.txt`
-- `predict_model.py`
-- `model_features.py`
-- `labeling.py`
-- `ai_model.joblib`
-- `ai_model_meta.json`
-- `requirements.txt`
-- Python dependencies installed with `python -m pip install -r requirements.txt`
-
-Then run:
-
-```powershell
-.\PredictiveAutoHeal.exe
+```bash
+python -m pytest
 ```
 
-The portable app creates `monitor.db` next to the executable on the target device.
+---
 
-## Notes
+# 📊 Features Overview
 
-- The AI model uses the `ai_reliability_v2` prediction contract.
-- The model expects an 8-sample runtime window.
-- If model files are missing or prediction fails, the C++ app can still rely on threshold and anomaly scoring.
-- `SAFE_MODE=1` keeps automated healing behavior conservative.
+| Feature | Description |
+|---|---|
+| Authentication | Secure hashed login system |
+| Expense Tracking | Add, edit, delete expenses |
+| Reports | Monthly & yearly summaries |
+| Charts | Visual spending analytics |
+| CSV Export | Export filtered data |
+| SQLite Storage | Lightweight local database |
 
+---
+
+# 🔒 Security Notes
+
+This project is intended for personal/local usage and learning purposes.
+
+Do NOT commit:
+- `.env`
+- Database files
+- Exported CSV files
+
+The application includes:
+- Password hashing
+- CSRF protection
+- Environment-based secrets
+
+---
+
+# 📦 Data Storage
+
+- Expense data is stored in `expenses.db`
+- Database files are ignored by Git
+- Existing CSV data can optionally migrate into SQLite on startup
+
+---
+
+# 🌟 Future Improvements
+
+- Multi-user support
+- Budget tracking
+- REST API endpoints
+- Docker deployment
+- Cloud database support
+- Dark mode UI
+- Advanced analytics dashboard
+
+---
+
+# 🤝 Contributing
+
+Contributions, suggestions, and improvements are welcome.
+
+Feel free to fork the repository and submit a pull request.
+
+---
+
+# 📄 License
+
+This project is open-source and available under the MIT License.
+
+---
+
+# ⭐ Support
+
+If you like this project, consider giving it a star on GitHub!
