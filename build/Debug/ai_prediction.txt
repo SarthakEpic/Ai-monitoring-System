@@ -1,1 +1,0 @@
-{"risk":68.6848,"probability":68.6848,"confidence":44.5688,"class":"WARNING","reason":"memory near threshold, cpu near threshold, disk space low","recommended_action":"increase_observation","safe_to_heal":false,"class_probabilities":{"NORMAL":5.4739,"WARNING":44.5688,"CRITICAL":35.7413,"RECOVERY":14.2161},"feature_count":50,"contract":"ai_reliability_v2"}
