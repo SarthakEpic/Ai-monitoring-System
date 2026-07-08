@@ -1,69 +1,119 @@
-# PredictiveAutoHeal
+# 🖥️ PredictiveAutoHeal
 
-PredictiveAutoHeal is a Windows desktop monitoring tool that collects local system metrics, stores them in SQLite, and combines rule-based thresholds with a Python machine-learning model to estimate reliability risk. It shows CPU, memory, disk, network, process, AI forecast, and decision-engine status in a native Win32 dashboard.
+PredictiveAutoHeal is a Windows desktop monitoring and AI-assisted reliability analysis tool built using C++20, Win32 APIs, SQLite, and Python machine learning.
 
-## Features
+The application continuously monitors system health metrics and combines rule-based thresholds with AI predictions to estimate reliability risks in real time.
 
-- Native C++20 Win32 dashboard.
-- CPU, memory, disk, network, process count, and top-process monitoring.
-- SQLite-backed metric history in `monitor.db`.
-- Batched background metric persistence.
-- Configurable threshold and performance profiles.
-- Python model training from collected telemetry.
-- Runtime AI prediction through `predict_model.py`.
-- Risk decision layer that combines thresholds, anomaly signals, and model confidence.
-- Portable deployment layout for copying the built app to another Windows machine.
+---
 
-## Project Structure
+## ✨ Features
 
-| Path | Purpose |
-| --- | --- |
-| `main.cpp` | Win32 dashboard, monitoring loop, runtime prediction integration. |
-| `SystemMetrics.*` | System metric collection. |
-| `MetricsStorage.*` | SQLite schema and metric logging. |
-| `MetricsPipeline.*` | Background batching pipeline for metric writes. |
-| `DecisionEngine.*` | Risk scoring and action recommendation logic. |
-| `AppConfig.*` | `config.txt` parsing helpers. |
-| `train_model.py` | Trains the reliability model from `monitor.db`. |
-| `predict_model.py` | Runs prediction for runtime feature JSON. |
-| `model_features.py` | Feature engineering and prediction payload contract. |
-| `labeling.py` | Training label generation. |
-| `test_model_contract.py` | Python unit tests for the model/runtime contract. |
-| `TRANSFER.md` | Portable copy guide. |
-| `portable/` | Ready-to-copy runtime bundle. |
+- 📊 Real-time CPU, memory, disk, and network monitoring
+- 🧠 AI-powered reliability prediction system
+- ⚠️ Rule-based anomaly and threshold detection
+- 💾 SQLite-backed telemetry storage
+- 🔄 Background metric batching pipeline
+- 🖥️ Native Win32 dashboard
+- ⚙️ Configurable performance and alert profiles
+- 🚀 Portable deployment support
+- 🧪 Python unit tests for prediction contracts
 
-## Requirements
+---
 
-- Windows.
-- Visual Studio 2022 Build Tools or another CMake-compatible MSVC toolchain.
-- CMake 3.20 or newer.
-- Python 3.12 or newer.
-- Python packages from `requirements.txt`:
-  - `numpy`
-  - `pandas`
-  - `scikit-learn`
-  - `joblib`
+# 📸 Screenshots
 
-SQLite is bundled in the repository as `sqlite3.c` and `sqlite3.h`.
+```md
+![Dashboard](screenshots/dashboard.png)
+![AI Forecast](screenshots/ai-forecast.png)
+![Metrics](screenshots/system-metrics.png)
+![Decision Engine](screenshots/decision-engine.png)
+```
 
-## Python Setup
+---
 
-Install the Python dependencies:
+# 🛠️ Tech Stack
+
+## Core Application
+- C++20
+- Win32 API
+- SQLite
+- CMake
+
+## AI / ML Layer
+- Python 3.12+
+- NumPy
+- Pandas
+- Scikit-learn
+- Joblib
+
+---
+
+# 📁 Project Structure
+
+```text
+PredictiveAutoHeal/
+│
+├── main.cpp                 # Dashboard and runtime integration
+├── SystemMetrics.*          # System metric collection
+├── MetricsStorage.*         # SQLite schema and logging
+├── MetricsPipeline.*        # Background batching pipeline
+├── DecisionEngine.*         # Risk scoring and recommendations
+├── AppConfig.*              # Config parsing
+│
+├── train_model.py           # Model training
+├── predict_model.py         # Runtime prediction
+├── model_features.py        # Feature engineering
+├── labeling.py              # Label generation
+├── test_model_contract.py   # Model contract tests
+│
+├── portable/                # Portable runtime bundle
+├── TRANSFER.md              # Deployment guide
+├── requirements.txt
+└── README.md
+```
+
+---
+
+# ⚡ Requirements
+
+- Windows
+- Visual Studio 2022 Build Tools
+- CMake 3.20+
+- Python 3.12+
+
+SQLite is bundled directly in the repository.
+
+---
+
+# 🚀 Getting Started
+
+## 1️⃣ Clone the Repository
+
+```powershell
+git clone https://github.com/your-username/PredictiveAutoHeal.git
+cd PredictiveAutoHeal
+```
+
+---
+
+## 2️⃣ Install Python Dependencies
 
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-If Python is not available as `python`, update `config.txt`:
+If Python is not available globally, update `config.txt`:
 
 ```txt
 PYTHON_EXE=C:\Path\To\python.exe
 ```
 
-## Build
+---
 
-Open a Developer PowerShell or load the Visual Studio environment first:
+## 3️⃣ Build The Project
+
+Open a Developer PowerShell:
 
 ```powershell
 cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" && powershell'
@@ -74,111 +124,148 @@ Configure and build:
 ```powershell
 mkdir build
 cd build
+
 cmake ..
 cmake --build . --config Debug
 ```
 
-The executable is created at:
+Executable location:
 
-```txt
+```text
 build\Debug\PredictiveAutoHeal.exe
 ```
 
-The post-build step copies runtime files such as `config.txt`, `predict_model.py`, `model_features.py`, `labeling.py`, `requirements.txt`, and model artifacts into the executable directory when they exist.
+---
 
-## Run
-
-From the repository root:
+# ▶️ Run The Application
 
 ```powershell
 .\build\Debug\PredictiveAutoHeal.exe
 ```
 
-The app creates or updates `monitor.db` next to the executable and begins collecting telemetry for the local machine.
+The application automatically creates:
 
-## Train The Model
+```text
+monitor.db
+```
 
-Run the application first so `monitor.db` has enough metric history. Then train a model:
+for storing telemetry data locally.
+
+---
+
+# 🧠 Train The AI Model
+
+Run the application first so enough telemetry data is collected.
+
+Then train the model:
 
 ```powershell
 python train_model.py --db build\monitor.db --model build\ai_model.joblib --meta build\ai_model_meta.json
 ```
 
-Training also writes:
+Generated reports:
 
-```txt
+```text
 model_report.json
 model_report.txt
 ```
 
-The reliability report includes priority metrics for `CRITICAL` and `RECOVERY`.
-Use those class-level precision, recall, and F1 scores when comparing model
-changes; overall accuracy can hide weak recovery detection.
-
-If training reports that there are not enough rows, leave the app running longer and try again.
-
-## Run Tests
+# 🧪 Run Tests
 
 ```powershell
 python -m unittest test_model_contract.py
 ```
 
-## Configuration
+---
 
-Runtime settings live in `config.txt`.
+# ⚙️ Configuration
+
+Runtime settings are stored inside:
+
+```text
+config.txt
+```
+
+Example:
 
 ```txt
 CPU_THRESHOLD=80
 MEM_THRESHOLD=85
 DISK_THRESHOLD=8
-PERFORMANCE_MODE=LOW_END
 AI_ALERT_THRESHOLD=70
-AI_ALERT_CLEAR_THRESHOLD=55
-AI_ALERT_TRIGGER_STREAK=2
-AI_ALERT_CLEAR_STREAK=2
-AI_PREDICT_INTERVAL_TICKS=10
-AI_MODEL_TIMEOUT_MS=8000
-AI_MODEL_CACHE_TTL_TICKS=30
-DECISION_WARNING_THRESHOLD=45
-DECISION_CRITICAL_THRESHOLD=65
-PIPELINE_BATCH_SIZE=8
-PIPELINE_FLUSH_MS=2000
-PYTHON_EXE=python
 SAFE_MODE=1
 SERVICE_NAME=Spooler
 ```
 
-Performance modes:
+---
 
-- `LOW_END`: fewer model calls and longer cache lifetime.
-- `BALANCED`: moderate prediction frequency.
-- `HIGH_PERFORMANCE`: more frequent prediction checks.
+# 🎯 Performance Modes
 
-## Portable Deployment
+| Mode | Description |
+|---|---|
+| `LOW_END` | Reduced prediction frequency |
+| `BALANCED` | Moderate prediction frequency |
+| `HIGH_PERFORMANCE` | Aggressive AI prediction checks |
 
-Use the `portable/` folder or follow `TRANSFER.md`. A target machine needs:
+---
 
-- `PredictiveAutoHeal.exe`
-- `config.txt`
-- `predict_model.py`
-- `model_features.py`
-- `labeling.py`
-- `ai_model.joblib`
-- `ai_model_meta.json`
-- `requirements.txt`
-- Python dependencies installed with `python -m pip install -r requirements.txt`
+# 📦 Portable Deployment
 
-Then run:
+The project supports portable deployment.
+
+Required files:
+
+```text
+PredictiveAutoHeal.exe
+config.txt
+predict_model.py
+model_features.py
+labeling.py
+ai_model.joblib
+ai_model_meta.json
+requirements.txt
+```
+
+Run:
 
 ```powershell
 .\PredictiveAutoHeal.exe
 ```
 
-The portable app creates `monitor.db` next to the executable on the target device.
+---
 
-## Notes
+# 🔒 Safety Notes
 
-- The AI model uses the `ai_reliability_v2` prediction contract.
-- The model expects an 8-sample runtime window.
-- If model files are missing or prediction fails, the C++ app can still rely on threshold and anomaly scoring.
-- `SAFE_MODE=1` keeps automated healing behavior conservative.
+- All telemetry processing is local
+- No external cloud dependency
+- AI prediction failures automatically fall back to rule-based monitoring
+- `SAFE_MODE=1` keeps recovery actions conservative
+
+---
+
+# 🌟 Future Improvements
+
+- GPU monitoring support
+- Live performance graphs
+- Automated recovery actions
+- Deep-learning anomaly detection
+- Web dashboard integration
+- Multi-device monitoring
+
+---
+
+# 🤝 Contributing
+
+Contributions and improvements are welcome.
+
+Feel free to:
+- Fork the repository
+- Open issues
+- Submit pull requests
+
+---
+
+# 📄 License
+
+
+---
