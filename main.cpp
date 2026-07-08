@@ -58,6 +58,9 @@ double g_netDown = 0.0;
 double g_netUp = 0.0;
 double g_topProcessCpu = 0.0;
 double g_topProcessMem = 0.0;
+double g_topProcessPrivateMem = 0.0;
+double g_topProcessWaste = 0.0;
+double g_topProcessExpectedGain = 0.0;
 int g_processCount = 0;
 unsigned long g_topProcessPid = 0;
 
@@ -65,21 +68,32 @@ bool g_alert = false;
 string g_aiSource = "WARMING UP";
 string g_aiClass = "UNKNOWN";
 string g_aiReason = "Collecting baseline";
+string g_rootCause = "unknown";
+string g_modelReadiness = "unknown";
+string g_modelGeneratedAt = "unknown";
 string g_recommendedAction = "monitor_only";
 string g_scenarioLabel = "auto";
 string g_topProcessName = "N/A";
+string g_topProcessCategory = "UNKNOWN";
+string g_topProcessSafety = "UNKNOWN";
+string g_topProcessRecommendation = "observe";
+string g_topProcessReason = "insufficient process context";
 string g_decisionSummary = "System stable";
 string g_decisionReason = "Collecting baseline";
 RiskLevel g_decisionLevel = RiskLevel::Normal;
 bool g_safeToHeal = false;
+int g_modelFeatureCount = 0;
 
 deque<double> g_cpuHist;
 deque<double> g_memHist;
 deque<double> g_diskHist;
 deque<double> g_netHist;
 deque<double> g_processHist;
+deque<double> g_topCpuHist;
+deque<double> g_topMemHist;
 
 mutex g_dataMutex;
+mutex g_logMutex;
 
 HFONT gFontTitle = NULL;
 HFONT gFontSection = NULL;
@@ -94,6 +108,8 @@ atomic<bool> g_running = true;
 thread g_monitorThread;
 long long g_tick = 0;
 DashboardView g_dashboardView = DashboardView::Overview;
+PROCESS_INFORMATION g_inferenceServiceProcess{};
+bool g_inferenceServiceActive = false;
 
 template <typename T>
 string DequeToJsonArray(const deque<T>& values) {
@@ -268,8 +284,13 @@ struct ModelPrediction {
     double confidence = 0.0;
     string predictedClass = "UNKNOWN";
     string reason = "N/A";
+    string rootCause = "unknown";
+    string rootSeverity = "normal";
+    string modelReadiness = "unknown";
+    string modelGeneratedAt = "unknown";
     string recommendedAction = "monitor_only";
     bool safeToHeal = false;
+    int featureCount = 0;
 };
 
 string ExtractJsonString(const string& text, const string& key, const string& fallback = "") {
@@ -327,6 +348,38 @@ bool ExtractJsonBool(const string& text, const string& key, bool fallback = fals
     return fallback;
 }
 
+ModelPrediction ParseModelPredictionText(const string& text) {
+    ModelPrediction failed;
+    try {
+        ModelPrediction prediction;
+        if (!text.empty() && text.front() == '{') {
+            prediction.risk = ExtractJsonDouble(text, "risk", ExtractJsonDouble(text, "probability", -1.0));
+            prediction.confidence = ExtractJsonDouble(text, "confidence", 0.0);
+            prediction.predictedClass = ExtractJsonString(text, "class", "UNKNOWN");
+            prediction.reason = ExtractJsonString(text, "reason", "N/A");
+            prediction.rootCause = ExtractJsonString(text, "primary", "unknown");
+            prediction.rootSeverity = ExtractJsonString(text, "severity", "normal");
+            prediction.modelReadiness = ExtractJsonString(text, "model_readiness", "unknown");
+            prediction.modelGeneratedAt = ExtractJsonString(text, "model_generated_at", "unknown");
+            prediction.featureCount = static_cast<int>(ExtractJsonDouble(text, "feature_count", 0.0));
+            prediction.recommendedAction = ExtractJsonString(text, "recommended_action", "monitor_only");
+            prediction.safeToHeal = ExtractJsonBool(text, "safe_to_heal", false);
+        } else {
+            prediction.risk = stod(text);
+            prediction.confidence = 55.0;
+            prediction.predictedClass = prediction.risk >= 75.0 ? "CRITICAL" : (prediction.risk >= 55.0 ? "WARNING" : "NORMAL");
+            prediction.reason = "legacy model probability";
+            prediction.rootCause = "legacy_probability";
+        }
+
+        if (prediction.risk < 0.0 || prediction.risk > 100.0) return failed;
+        prediction.confidence = ClampDouble(prediction.confidence, 0.0, 100.0);
+        return prediction;
+    } catch (...) {
+        return failed;
+    }
+}
+
 void WriteRuntimeFeaturesJson(
     const wstring& outputPath,
     const deque<double>& cpuHist,
@@ -334,6 +387,8 @@ void WriteRuntimeFeaturesJson(
     const deque<double>& diskHist,
     const deque<double>& netHist,
     const deque<double>& processHist,
+    const deque<double>& topCpuHist,
+    const deque<double>& topMemHist,
     int cpuTh,
     int memTh,
     int diskTh
@@ -351,7 +406,9 @@ void WriteRuntimeFeaturesJson(
     file << "  \"mem_history\": " << DequeToJsonArray(memHist) << ",\n";
     file << "  \"disk_history\": " << DequeToJsonArray(diskHist) << ",\n";
     file << "  \"net_history\": " << DequeToJsonArray(netHist) << ",\n";
-    file << "  \"process_history\": " << DequeToJsonArray(processHist) << "\n";
+    file << "  \"process_history\": " << DequeToJsonArray(processHist) << ",\n";
+    file << "  \"top_process_cpu_history\": " << DequeToJsonArray(topCpuHist) << ",\n";
+    file << "  \"top_process_mem_history\": " << DequeToJsonArray(topMemHist) << "\n";
     file << "}\n";
     file.close();
 
@@ -363,6 +420,36 @@ void WriteRuntimeFeaturesJson(
 void ShowAlert(const string& message) {
     MessageBeep(MB_ICONWARNING);
     MessageBoxA(nullptr, message.c_str(), "AI Alert", MB_OK | MB_ICONWARNING);
+}
+
+string JsonEscape(const string& value) {
+    string escaped;
+    escaped.reserve(value.size());
+    for (char ch : value) {
+        switch (ch) {
+        case '\\': escaped += "\\\\"; break;
+        case '"': escaped += "\\\""; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        default: escaped.push_back(ch); break;
+        }
+    }
+    return escaped;
+}
+
+void AppendRuntimeLog(const string& event, const map<string, string>& fields) {
+    lock_guard<mutex> lock(g_logMutex);
+    const fs::path logPath = fs::path(GetExecutableDir()) / L"runtime_events.jsonl";
+    ofstream file(logPath, ios::app);
+    if (!file) return;
+
+    const auto now = system_clock::to_time_t(system_clock::now());
+    file << "{\"ts\":" << now << ",\"event\":\"" << JsonEscape(event) << "\"";
+    for (const auto& [key, value] : fields) {
+        file << ",\"" << JsonEscape(key) << "\":\"" << JsonEscape(value) << "\"";
+    }
+    file << "}\n";
 }
 
 double ComputeFallbackProbability(double cpu, double mem, double disk, int cpuTh, int memTh, int diskTh) {
@@ -462,28 +549,7 @@ ModelPrediction ReadModelPrediction() {
 
     DeleteFileW(outputPath.c_str());
 
-    try {
-        ModelPrediction prediction;
-        if (!text.empty() && text.front() == '{') {
-            prediction.risk = ExtractJsonDouble(text, "risk", ExtractJsonDouble(text, "probability", -1.0));
-            prediction.confidence = ExtractJsonDouble(text, "confidence", 0.0);
-            prediction.predictedClass = ExtractJsonString(text, "class", "UNKNOWN");
-            prediction.reason = ExtractJsonString(text, "reason", "N/A");
-            prediction.recommendedAction = ExtractJsonString(text, "recommended_action", "monitor_only");
-            prediction.safeToHeal = ExtractJsonBool(text, "safe_to_heal", false);
-        } else {
-            prediction.risk = stod(text);
-            prediction.confidence = 55.0;
-            prediction.predictedClass = prediction.risk >= 75.0 ? "CRITICAL" : (prediction.risk >= 55.0 ? "WARNING" : "NORMAL");
-            prediction.reason = "legacy model probability";
-        }
-
-        if (prediction.risk < 0.0 || prediction.risk > 100.0) return failed;
-        prediction.confidence = ClampDouble(prediction.confidence, 0.0, 100.0);
-        return prediction;
-    } catch (...) {
-        return failed;
-    }
+    return ParseModelPredictionText(text);
 }
 
 ModelPrediction ReadModelPredictionWithRetry() {
@@ -496,6 +562,136 @@ ModelPrediction ReadModelPredictionWithRetry() {
         }
     }
     return ModelPrediction{};
+}
+
+bool UsePersistentInferenceService() {
+    string mode = ToUpperAscii(g_config.GetString("AI_INFERENCE_MODE", "SERVICE"));
+    return mode == "SERVICE" || mode == "PERSISTENT_SERVICE";
+}
+
+bool IsInferenceServiceRunning() {
+    if (!g_inferenceServiceActive) return false;
+
+    DWORD exitCode = 1;
+    if (!GetExitCodeProcess(g_inferenceServiceProcess.hProcess, &exitCode)) {
+        g_inferenceServiceActive = false;
+        return false;
+    }
+
+    if (exitCode == STILL_ACTIVE) return true;
+
+    CloseHandle(g_inferenceServiceProcess.hThread);
+    CloseHandle(g_inferenceServiceProcess.hProcess);
+    g_inferenceServiceProcess = PROCESS_INFORMATION{};
+    g_inferenceServiceActive = false;
+    return false;
+}
+
+bool StartInferenceService() {
+    if (!UsePersistentInferenceService()) return false;
+    if (IsInferenceServiceRunning()) return true;
+
+    const fs::path exeDir = GetExecutableDir();
+    const wstring scriptPath = ResolveExistingPath({
+        (exeDir / L"inference_service.py").wstring(),
+        (exeDir.parent_path() / L"inference_service.py").wstring(),
+        (exeDir.parent_path().parent_path() / L"inference_service.py").wstring(),
+        L"inference_service.py",
+        L"..\\inference_service.py",
+        L"..\\..\\inference_service.py",
+    });
+    const wstring modelPath = ResolveExistingPath({
+        (exeDir / L"ai_model.joblib").wstring(),
+        (exeDir.parent_path() / L"ai_model.joblib").wstring(),
+        (exeDir.parent_path().parent_path() / L"ai_model.joblib").wstring(),
+        L"ai_model.joblib",
+        L"..\\ai_model.joblib",
+    });
+    const wstring inputPath = (exeDir / L"runtime_features.json").wstring();
+    const wstring outputPath = (exeDir / L"ai_prediction_service.json").wstring();
+
+    if (scriptPath.empty() || modelPath.empty() || !fs::exists(scriptPath) || !fs::exists(modelPath)) {
+        AppendRuntimeLog("inference_service_unavailable", {
+            {"script", fs::path(scriptPath).string()},
+            {"model", fs::path(modelPath).string()},
+        });
+        return false;
+    }
+
+    const wstring pythonExe = WidenAscii(g_config.GetString("PYTHON_EXE", "python"));
+    const int pollMs = max(200, g_config.GetInt("AI_SERVICE_POLL_MS", 1000));
+    const wstring command =
+        L"\"" + pythonExe +
+        L"\" \"" + scriptPath +
+        L"\" --input \"" + inputPath +
+        L"\" --model \"" + modelPath +
+        L"\" --output \"" + outputPath +
+        L"\" --poll-ms " + to_wstring(pollMs);
+
+    vector<wchar_t> cmdBuffer(command.begin(), command.end());
+    cmdBuffer.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    BOOL ok = CreateProcessW(
+        nullptr,
+        cmdBuffer.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &si,
+        &pi
+    );
+
+    if (!ok) {
+        AppendRuntimeLog("inference_service_start_failed", {
+            {"script", fs::path(scriptPath).string()},
+            {"model", fs::path(modelPath).string()},
+        });
+        return false;
+    }
+
+    g_inferenceServiceProcess = pi;
+    g_inferenceServiceActive = true;
+    AppendRuntimeLog("inference_service_started", {
+        {"script", fs::path(scriptPath).filename().string()},
+        {"poll_ms", to_string(pollMs)},
+    });
+    return true;
+}
+
+void StopInferenceService() {
+    if (!g_inferenceServiceActive) return;
+
+    DWORD exitCode = 1;
+    if (GetExitCodeProcess(g_inferenceServiceProcess.hProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+        TerminateProcess(g_inferenceServiceProcess.hProcess, 0);
+        WaitForSingleObject(g_inferenceServiceProcess.hProcess, 1000);
+    }
+
+    CloseHandle(g_inferenceServiceProcess.hThread);
+    CloseHandle(g_inferenceServiceProcess.hProcess);
+    g_inferenceServiceProcess = PROCESS_INFORMATION{};
+    g_inferenceServiceActive = false;
+}
+
+ModelPrediction ReadServicePrediction() {
+    ModelPrediction failed;
+    const fs::path outputPath = fs::path(GetExecutableDir()) / L"ai_prediction_service.json";
+    if (!fs::exists(outputPath)) return failed;
+
+    ifstream file(outputPath);
+    if (!file) return failed;
+
+    string text((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
+    return ParseModelPredictionText(text);
 }
 
 void DrawTextAt(HDC hdc, int x, int y, const string& text, COLORREF color, HFONT font) {
@@ -660,8 +856,17 @@ void DrawReliabilityPanel(HDC hdc, const RECT& rc,
                           const string& source,
                           const string& aiClass,
                           const string& aiReason,
+                          const string& rootCause,
+                          const string& modelReadiness,
+                          const string& modelGeneratedAt,
+                          int modelFeatureCount,
                           RiskLevel decisionLevel) {
     DrawSectionPanel(hdc, rc, "AI Reliability", LevelAccentColor(decisionLevel));
+
+    const int panelH = rc.bottom - rc.top;
+    const string readiness = ToUpperAscii(ToDisplayToken(modelReadiness));
+    string featureText = modelFeatureCount > 0 ? to_string(modelFeatureCount) + "F" : "N/A";
+    string builtText = modelGeneratedAt == "unknown" ? "unknown" : ShortenText(modelGeneratedAt, 19);
 
     DrawTextAt(hdc, rc.left + 16, rc.top + 48, "Risk", RGB(160, 170, 185), gFontSmall);
     DrawTextAt(hdc, rc.left + 16, rc.top + 72, to_string(static_cast<int>(aiProb)) + "%", RGB(255, 255, 255), gFontValue);
@@ -675,8 +880,20 @@ void DrawReliabilityPanel(HDC hdc, const RECT& rc,
     DrawTextAt(hdc, rc.left + 90, rc.top + 238, source, RGB(180, 220, 255), gFontSmall);
     DrawTextAt(hdc, rc.left + 16, rc.top + 264, "Class", RGB(160, 170, 185), gFontSmall);
     DrawTextAt(hdc, rc.left + 90, rc.top + 264, aiClass, RGB(235, 240, 248), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 300, "Why", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 58, rc.top + 300, ShortenText(aiReason, 42), RGB(235, 240, 248), gFontSmall);
+
+    if (panelH >= 330) {
+        DrawTextAt(hdc, rc.left + 16, rc.top + 290, "Model", RGB(160, 170, 185), gFontSmall);
+        DrawTextAt(hdc, rc.left + 90, rc.top + 290, ShortenText(readiness + " / " + featureText, 24), RGB(235, 240, 248), gFontSmall);
+        DrawTextAt(hdc, rc.left + 16, rc.top + 316, "Built", RGB(160, 170, 185), gFontSmall);
+        DrawTextAt(hdc, rc.left + 90, rc.top + 316, ShortenText(builtText, 24), RGB(235, 240, 248), gFontSmall);
+        DrawTextAt(hdc, rc.left + 16, rc.top + 342, "Root", RGB(160, 170, 185), gFontSmall);
+        DrawTextAt(hdc, rc.left + 90, rc.top + 342, ShortenText(ToUpperAscii(ToDisplayToken(rootCause)), 24), RGB(235, 240, 248), gFontSmall);
+        DrawTextAt(hdc, rc.left + 16, rc.top + 368, "Why", RGB(160, 170, 185), gFontSmall);
+        DrawTextAt(hdc, rc.left + 58, rc.top + 368, ShortenText(aiReason, 42), RGB(235, 240, 248), gFontSmall);
+    } else {
+        DrawTextAt(hdc, rc.left + 16, rc.top + 290, "Root", RGB(160, 170, 185), gFontSmall);
+        DrawTextAt(hdc, rc.left + 90, rc.top + 290, ShortenText(ToUpperAscii(ToDisplayToken(rootCause)), 24), RGB(235, 240, 248), gFontSmall);
+    }
 }
 
 void DrawDecisionPanel(HDC hdc, const RECT& rc,
@@ -725,6 +942,12 @@ void DrawAutoHealPanel(HDC hdc, const RECT& rc,
     DrawTextAt(hdc, rc.left + 14, rc.top + 112, "Action", RGB(160, 170, 185), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 138, ShortenText(ToUpperAscii(ToDisplayToken(recommendedAction)), 30), RGB(235, 240, 248), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 164, "Top process: " + ShortenText(snapshot.topProcess.name, 24), RGB(170, 180, 195), gFontSmall);
+    if ((rc.bottom - rc.top) >= 230) {
+        DrawTextAt(hdc, rc.left + 14, rc.top + 190, "Type: " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.category)), 18), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 150, rc.top + 190, "Safety: " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.safety)), 14), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 216, "Waste " + to_string(static_cast<int>(snapshot.topProcess.wasteScore)) + "  Gain " + to_string(static_cast<int>(snapshot.topProcess.expectedGainMB)) + " MB", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 242, ShortenText(snapshot.topProcess.reason, 44), RGB(180, 220, 255), gFontSmall);
+    }
 }
 
 void DrawThresholdPanel(HDC hdc, const RECT& rc,
@@ -833,6 +1056,12 @@ void MonitorThread(HWND hwnd) {
     decisionThresholds.warningRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_WARNING_THRESHOLD", 55.0), 0.0, 100.0);
     decisionThresholds.criticalRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_CRITICAL_THRESHOLD", 75.0), decisionThresholds.warningRiskThreshold, 100.0);
     const wstring runtimeFeaturesPath = (fs::path(GetExecutableDir()) / L"runtime_features.json").wstring();
+    const bool preferInferenceService = UsePersistentInferenceService();
+    const bool allowProcessFallback = g_config.GetInt("AI_SERVICE_FALLBACK_TO_PROCESS", 1) != 0;
+
+    if (preferInferenceService) {
+        StartInferenceService();
+    }
 
     bool lastAlert = false;
     bool alertState = false;
@@ -848,7 +1077,7 @@ void MonitorThread(HWND hwnd) {
         SystemSnapshot snapshot = collector.Collect();
         snapshot.scenarioLabel = ReadScenarioLabel();
 
-        deque<double> cpuCopy, memCopy, diskCopy, netCopy, processCopy;
+        deque<double> cpuCopy, memCopy, diskCopy, netCopy, processCopy, topCpuCopy, topMemCopy;
         double aiProbLocal = 0.0;
         double aiConfidenceLocal = 0.0;
         string sourceLocal = "WARMING UP";
@@ -870,22 +1099,33 @@ void MonitorThread(HWND hwnd) {
             g_topProcessName = snapshot.topProcess.name;
             g_topProcessCpu = snapshot.topProcess.cpuPercent;
             g_topProcessMem = snapshot.topProcess.memoryMB;
+            g_topProcessPrivateMem = snapshot.topProcess.privateMemoryMB;
+            g_topProcessWaste = snapshot.topProcess.wasteScore;
+            g_topProcessExpectedGain = snapshot.topProcess.expectedGainMB;
+            g_topProcessCategory = snapshot.topProcess.category;
+            g_topProcessSafety = snapshot.topProcess.safety;
+            g_topProcessRecommendation = snapshot.topProcess.recommendation;
+            g_topProcessReason = snapshot.topProcess.reason;
 
             PushHistory(g_cpuHist, snapshot.cpuUsage, HISTORY_SIZE);
             PushHistory(g_memHist, snapshot.memoryUsage, HISTORY_SIZE);
             PushHistory(g_diskHist, snapshot.diskFree, HISTORY_SIZE);
             PushHistory(g_netHist, snapshot.netDownKBps + snapshot.netUpKBps, HISTORY_SIZE);
             PushHistory(g_processHist, static_cast<double>(snapshot.processCount), HISTORY_SIZE);
+            PushHistory(g_topCpuHist, snapshot.topProcess.cpuPercent, HISTORY_SIZE);
+            PushHistory(g_topMemHist, snapshot.topProcess.memoryMB, HISTORY_SIZE);
 
             cpuCopy = g_cpuHist;
             memCopy = g_memHist;
             diskCopy = g_diskHist;
             netCopy = g_netHist;
             processCopy = g_processHist;
+            topCpuCopy = g_topCpuHist;
+            topMemCopy = g_topMemHist;
         }
 
         g_pipeline.Enqueue(snapshot);
-        WriteRuntimeFeaturesJson(runtimeFeaturesPath, cpuCopy, memCopy, diskCopy, netCopy, processCopy, cpuTh, memTh, diskTh);
+        WriteRuntimeFeaturesJson(runtimeFeaturesPath, cpuCopy, memCopy, diskCopy, netCopy, processCopy, topCpuCopy, topMemCopy, cpuTh, memTh, diskTh);
 
         ModelPrediction modelPrediction;
         const bool hasModelWindow =
@@ -898,13 +1138,22 @@ void MonitorThread(HWND hwnd) {
             ((g_tick % aiPredictIntervalTicks) == 0 || g_aiSource == "WARMING UP");
 
         if (shouldRunModel) {
-            modelPrediction = ReadModelPredictionWithRetry();
+            if (preferInferenceService && StartInferenceService()) {
+                modelPrediction = ReadServicePrediction();
+            }
+
+            if (modelPrediction.risk < 0.0 && (!preferInferenceService || allowProcessFallback)) {
+                modelPrediction = ReadModelPredictionWithRetry();
+            }
         }
 
         double currentAiProb = 0.0;
         double currentAiConfidence = 0.0;
         string currentSource = "WARMING UP";
         string currentAiReason = "Collecting baseline";
+        string currentAiClass = "UNKNOWN";
+        string currentRootCause = "unknown";
+        string currentRecommendedAction = "monitor_only";
 
         {
             lock_guard<mutex> lock(g_dataMutex);
@@ -914,6 +1163,10 @@ void MonitorThread(HWND hwnd) {
                 g_aiConfidence = 35.0;
                 g_aiClass = "WARMING_UP";
                 g_aiReason = "Collecting baseline window";
+                g_rootCause = "baseline";
+                g_modelReadiness = "unknown";
+                g_modelGeneratedAt = "unknown";
+                g_modelFeatureCount = 0;
                 g_recommendedAction = "monitor_only";
                 g_safeToHeal = false;
                 g_aiSource = "WARMING UP";
@@ -924,6 +1177,10 @@ void MonitorThread(HWND hwnd) {
                 g_aiConfidence = modelPrediction.confidence;
                 g_aiClass = modelPrediction.predictedClass;
                 g_aiReason = modelPrediction.reason;
+                g_rootCause = modelPrediction.rootCause;
+                g_modelReadiness = modelPrediction.modelReadiness;
+                g_modelGeneratedAt = modelPrediction.modelGeneratedAt;
+                g_modelFeatureCount = modelPrediction.featureCount;
                 g_recommendedAction = modelPrediction.recommendedAction;
                 g_safeToHeal = modelPrediction.safeToHeal;
                 g_aiSource = "MODEL";
@@ -932,6 +1189,10 @@ void MonitorThread(HWND hwnd) {
                 g_aiConfidence = lastModelPrediction.confidence;
                 g_aiClass = lastModelPrediction.predictedClass;
                 g_aiReason = lastModelPrediction.reason;
+                g_rootCause = lastModelPrediction.rootCause;
+                g_modelReadiness = lastModelPrediction.modelReadiness;
+                g_modelGeneratedAt = lastModelPrediction.modelGeneratedAt;
+                g_modelFeatureCount = lastModelPrediction.featureCount;
                 g_recommendedAction = lastModelPrediction.recommendedAction;
                 g_safeToHeal = lastModelPrediction.safeToHeal;
                 g_aiSource = "MODEL";
@@ -940,6 +1201,10 @@ void MonitorThread(HWND hwnd) {
                 g_aiConfidence = 40.0;
                 g_aiClass = g_aiProb >= decisionThresholds.criticalRiskThreshold ? "CRITICAL" : (g_aiProb >= decisionThresholds.warningRiskThreshold ? "WARNING" : "NORMAL");
                 g_aiReason = "fallback threshold pressure";
+                g_rootCause = "threshold_pressure";
+                g_modelReadiness = "unknown";
+                g_modelGeneratedAt = "unknown";
+                g_modelFeatureCount = 0;
                 g_recommendedAction = g_aiProb >= decisionThresholds.warningRiskThreshold ? "increase_observation" : "monitor_only";
                 g_safeToHeal = false;
                 g_aiSource = "FALLBACK";
@@ -949,6 +1214,9 @@ void MonitorThread(HWND hwnd) {
             currentAiConfidence = g_aiConfidence;
             currentSource = g_aiSource;
             currentAiReason = g_aiReason;
+            currentAiClass = g_aiClass;
+            currentRootCause = g_rootCause;
+            currentRecommendedAction = g_recommendedAction;
         }
 
         DecisionContext decisionContext;
@@ -1006,9 +1274,43 @@ void MonitorThread(HWND hwnd) {
                 string("Source: ") + sourceLocal + "\n" +
                 string("Reason: ") + reasonLocal + "\n" +
                 string("Top Process: ") + ShortenText(snapshot.topProcess.name, 28) + "\n" +
+                string("Process Type: ") + snapshot.topProcess.category + "\n" +
+                string("Safety: ") + snapshot.topProcess.safety + "\n" +
                 string("Decision: ") + decisionResult.summary;
 
             ShowAlert(msg);
+            AppendRuntimeLog("alert_triggered", {
+                {"risk", to_string(static_cast<int>(decisionResult.riskScore))},
+                {"ai_probability", to_string(static_cast<int>(aiProbLocal))},
+                {"confidence", to_string(static_cast<int>(aiConfidenceLocal))},
+                {"source", sourceLocal},
+                {"reason", reasonLocal},
+                {"top_process", snapshot.topProcess.name},
+                {"top_process_category", snapshot.topProcess.category},
+                {"top_process_safety", snapshot.topProcess.safety},
+                {"top_process_waste", to_string(static_cast<int>(snapshot.topProcess.wasteScore))},
+            });
+        }
+
+        if (shouldRunModel || (g_tick % 30 == 0)) {
+            AppendRuntimeLog("prediction_cycle", {
+                {"source", currentSource},
+                {"class", currentAiClass},
+                {"root_cause", currentRootCause},
+                {"action", currentRecommendedAction},
+                {"model_readiness", g_modelReadiness},
+                {"risk", to_string(static_cast<int>(decisionResult.riskScore))},
+                {"ai_probability", to_string(static_cast<int>(currentAiProb))},
+                {"confidence", to_string(static_cast<int>(currentAiConfidence))},
+                {"cpu", to_string(static_cast<int>(snapshot.cpuUsage))},
+                {"mem", to_string(static_cast<int>(snapshot.memoryUsage))},
+                {"disk", to_string(static_cast<int>(snapshot.diskFree))},
+                {"top_process", snapshot.topProcess.name},
+                {"top_process_category", snapshot.topProcess.category},
+                {"top_process_safety", snapshot.topProcess.safety},
+                {"top_process_waste", to_string(static_cast<int>(snapshot.topProcess.wasteScore))},
+                {"expected_gain_mb", to_string(static_cast<int>(snapshot.topProcess.expectedGainMB))},
+            });
         }
 
         lastAlert = alertLocal;
@@ -1044,9 +1346,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         string source;
         string aiClass;
         string aiReason;
+        string rootCause;
+        string modelReadiness;
+        string modelGeneratedAt;
         string recommendedAction;
         string decisionSummary;
         bool safeToHeal = false;
+        int modelFeatureCount = 0;
         RiskLevel decisionLevel = RiskLevel::Normal;
         double riskScore = 0.0;
         double anomalyScore = 0.0;
@@ -1077,6 +1383,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             snapshot.topProcess.name = g_topProcessName;
             snapshot.topProcess.cpuPercent = g_topProcessCpu;
             snapshot.topProcess.memoryMB = g_topProcessMem;
+            snapshot.topProcess.privateMemoryMB = g_topProcessPrivateMem;
+            snapshot.topProcess.wasteScore = g_topProcessWaste;
+            snapshot.topProcess.expectedGainMB = g_topProcessExpectedGain;
+            snapshot.topProcess.category = g_topProcessCategory;
+            snapshot.topProcess.safety = g_topProcessSafety;
+            snapshot.topProcess.recommendation = g_topProcessRecommendation;
+            snapshot.topProcess.reason = g_topProcessReason;
             aiProb = g_aiProb;
             aiConfidence = g_aiConfidence;
             riskScore = g_riskScore;
@@ -1086,6 +1399,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             source = g_aiSource;
             aiClass = g_aiClass;
             aiReason = g_aiReason;
+            rootCause = g_rootCause;
+            modelReadiness = g_modelReadiness;
+            modelGeneratedAt = g_modelGeneratedAt;
+            modelFeatureCount = g_modelFeatureCount;
             recommendedAction = g_recommendedAction;
             safeToHeal = g_safeToHeal;
             decisionSummary = g_decisionSummary;
@@ -1124,12 +1441,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawTextAt(memDC, 18, 470, "UP    " + FormatRate(snapshot.netUpKBps), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 494, "PROC  " + to_string(snapshot.processCount), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 518, "TOP   " + ShortenText(snapshot.topProcess.name, 17), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 542, "TYPE  " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.category)), 16), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 566, "SAFE  " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.safety)), 16), RGB(170, 180, 195), gFontSmall);
 
-        DrawTextAt(memDC, 18, 574, "Runtime", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(memDC, 18, 606, "MODE  " + FormatModeLabel(performanceMode), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 630, "MODEL " + to_string(aiPredictIntervalTicks) + " sec", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 654, string("DB    ") + (storageReady ? "ACTIVE" : "OFFLINE"), storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
-        DrawTextAt(memDC, 18, 678, "LABEL " + snapshot.scenarioLabel, RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 614, "Runtime", RGB(230, 235, 245), gFontSection);
+        DrawTextAt(memDC, 18, 646, "MODE  " + FormatModeLabel(performanceMode), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 670, "MODEL " + to_string(aiPredictIntervalTicks) + " sec", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 694, string("DB    ") + (storageReady ? "ACTIVE" : "OFFLINE"), storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
+        DrawTextAt(memDC, 18, 718, "LABEL " + snapshot.scenarioLabel, RGB(170, 180, 195), gFontSmall);
 
         int mainX = sidebarW + pad;
         int mainW = client.right - mainX - pad;
@@ -1179,7 +1498,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         if (g_dashboardView == DashboardView::Overview) {
             DrawGraph(memDC, graphRc, cpuHist, memHist, diskHist);
-            DrawReliabilityPanel(memDC, reliabilityRc, aiProb, aiConfidence, source, aiClass, aiReason, decisionLevel);
+            DrawReliabilityPanel(memDC, reliabilityRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
             DrawDecisionPanel(memDC, decisionRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary);
             DrawRuntimePanel(memDC, runtimeRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady);
             DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot);
@@ -1187,7 +1506,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         } else if (g_dashboardView == DashboardView::Reliability) {
             RECT bigReliability{ mainX, middleTop, mainX + reliabilityW + 120, middleTop + middleH };
             RECT decisionWide{ bigReliability.right + gap, middleTop, client.right - pad, middleTop + middleH };
-            DrawReliabilityPanel(memDC, bigReliability, aiProb, aiConfidence, source, aiClass, aiReason, decisionLevel);
+            DrawReliabilityPanel(memDC, bigReliability, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
             DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary);
             DrawPlaceholderWidePanel(memDC, decisionRc, "Model Contract", "Contract ai_reliability_v2", "50 features: resources, trends, spikes, recovery");
             DrawThresholdPanel(memDC, runtimeRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
@@ -1199,7 +1518,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DrawRuntimePanel(memDC, runtimeWide, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady);
             DrawThresholdPanel(memDC, thresholdWide, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
             DrawGraph(memDC, decisionRc, cpuHist, memHist, diskHist);
-            DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, decisionLevel);
+            DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
             DrawDecisionPanel(memDC, healRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary);
             DrawAutoHealPanel(memDC, thresholdRc, recommendedAction, safeToHeal, snapshot);
         } else {
@@ -1208,7 +1527,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DrawAutoHealPanel(memDC, healWide, recommendedAction, safeToHeal, snapshot);
             DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary);
             DrawPlaceholderWidePanel(memDC, decisionRc, "Safety Policy", "Auto-heal execution is disabled", "Future healing needs allowlist, cooldown, confidence, and rollback checks");
-            DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, decisionLevel);
+            DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
             DrawRuntimePanel(memDC, healRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady);
             DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
         }
@@ -1258,6 +1577,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (g_monitorThread.joinable()) {
             g_monitorThread.join();
         }
+        StopInferenceService();
         g_pipeline.Stop();
         if (gFontTitle) DeleteObject(gFontTitle);
         if (gFontSection) DeleteObject(gFontSection);

@@ -19,13 +19,13 @@ def main() -> int:
         total = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
         print(f"Rows: {total}")
 
-        if not has_column(conn, "metrics", "scenario_label"):
-            print("scenario_label column not found. Run the rebuilt app once to migrate the database.")
-            return 1
-
-        rows = conn.execute(
-            "SELECT UPPER(COALESCE(scenario_label, 'AUTO')), COUNT(*) FROM metrics GROUP BY UPPER(COALESCE(scenario_label, 'AUTO'))"
-        ).fetchall()
+        if has_column(conn, "metrics", "scenario_label"):
+            rows = conn.execute(
+                "SELECT UPPER(COALESCE(scenario_label, 'AUTO')), COUNT(*) FROM metrics GROUP BY UPPER(COALESCE(scenario_label, 'AUTO'))"
+            ).fetchall()
+        else:
+            rows = [("AUTO", total)]
+            print("scenario_label column not found. Treating existing rows as AUTO.")
     finally:
         conn.close()
 

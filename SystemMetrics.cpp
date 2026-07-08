@@ -1,8 +1,6 @@
 #include "SystemMetrics.h"
 
 #include <iphlpapi.h>
-#include <psapi.h>
-#include <tlhelp32.h>
 
 #include <algorithm>
 #include <chrono>
@@ -10,6 +8,8 @@
 #include <ctime>
 #include <cwchar>
 #include <vector>
+
+#include "ProcessGenome.h"
 
 using namespace std;
 
@@ -54,7 +54,7 @@ SystemSnapshot WindowsMetricsCollector::Collect() {
     snapshot.memoryUsage = ReadMemoryUsage();
     snapshot.diskFree = ReadDiskFreePercent(L"C:\\");
     ReadNetworkRates(snapshot.netDownKBps, snapshot.netUpKBps);
-    ReadProcessMetrics(snapshot.processCount, snapshot.topProcess);
+    ReadProcessGenome(snapshot);
     return snapshot;
 }
 
@@ -143,80 +143,11 @@ void WindowsMetricsCollector::ReadNetworkRates(double& downKBps, double& upKBps)
     hasPreviousNetworkTotals_ = true;
 }
 
-void WindowsMetricsCollector::ReadProcessMetrics(int& processCount, ProcessSummary& topProcess) {
-    processCount = 0;
-    topProcess = ProcessSummary{};
+void WindowsMetricsCollector::ReadProcessGenome(SystemSnapshot& snapshot) {
+    auto processes = processTelemetry_.Collect();
+    ProcessGenomeEngine::Annotate(processes);
 
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        return;
-    }
-
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-
-    unordered_map<unsigned long, unsigned long long> currentProcessTimes;
-    const long long nowMs = NowMs();
-    const double sampleSeconds =
-        previousProcessSampleMs_ > 0 ? max(0.001, static_cast<double>(nowMs - previousProcessSampleMs_) / 1000.0) : 0.0;
-
-    auto maybeUpdateTopProcess = [&](const ProcessSummary& candidate) {
-        if (candidate.cpuPercent > topProcess.cpuPercent + 0.001) {
-            topProcess = candidate;
-            return;
-        }
-        if (candidate.cpuPercent > 0.0 && abs(candidate.cpuPercent - topProcess.cpuPercent) <= 0.001 &&
-            candidate.memoryMB > topProcess.memoryMB) {
-            topProcess = candidate;
-            return;
-        }
-        if (topProcess.cpuPercent <= 0.0 && candidate.memoryMB > topProcess.memoryMB) {
-            topProcess = candidate;
-        }
-    };
-
-    if (Process32FirstW(snapshot, &entry)) {
-        do {
-            ++processCount;
-
-            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, entry.th32ProcessID);
-            if (!process) continue;
-
-            FILETIME createTime{}, exitTime{}, kernelTime{}, userTime{};
-            if (!GetProcessTimes(process, &createTime, &exitTime, &kernelTime, &userTime)) {
-                CloseHandle(process);
-                continue;
-            }
-
-            const unsigned long long cpuTime = FileTimeToULL(kernelTime) + FileTimeToULL(userTime);
-            currentProcessTimes[entry.th32ProcessID] = cpuTime;
-
-            PROCESS_MEMORY_COUNTERS_EX memoryCounters{};
-            double memoryMB = 0.0;
-            if (GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memoryCounters), sizeof(memoryCounters))) {
-                memoryMB = static_cast<double>(memoryCounters.WorkingSetSize) / (1024.0 * 1024.0);
-            }
-
-            double cpuPercent = 0.0;
-            auto previousIt = previousProcessTimes_.find(entry.th32ProcessID);
-            if (sampleSeconds > 0.0 && previousIt != previousProcessTimes_.end() && cpuTime >= previousIt->second) {
-                const double deltaCpuSeconds = static_cast<double>(cpuTime - previousIt->second) / 10000000.0;
-                cpuPercent = ClampPercent(100.0 * deltaCpuSeconds / (sampleSeconds * static_cast<double>(processorCount_)));
-            }
-
-            ProcessSummary candidate;
-            candidate.pid = entry.th32ProcessID;
-            candidate.name = Narrow(entry.szExeFile);
-            candidate.cpuPercent = cpuPercent;
-            candidate.memoryMB = memoryMB;
-            maybeUpdateTopProcess(candidate);
-
-            CloseHandle(process);
-        } while (Process32NextW(snapshot, &entry));
-    }
-
-    CloseHandle(snapshot);
-
-    previousProcessTimes_.swap(currentProcessTimes);
-    previousProcessSampleMs_ = nowMs;
+    snapshot.processCount = static_cast<int>(processes.size());
+    snapshot.topProcess = ProcessGenomeEngine::SelectTopPressureProcess(processes);
+    snapshot.processGenome = ProcessGenomeEngine::TopCandidates(processes, 20);
 }

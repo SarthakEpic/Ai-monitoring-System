@@ -1,0 +1,48 @@
+# Build outputs
+build/
+out/
+release/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.sln
+*.slnx
+*.vcxproj
+*.vcxproj.filters
+*.obj
+*.pdb
+*.ilk
+*.tlog
+*.recipe
+
+# Runtime artifacts
+portable/
+*.zip
+*.db
+*.sqlite
+*.sqlite3
+ai_prediction.txt
+ai_prediction_service.json
+runtime_events.jsonl
+runtime_features.json
+model_report.json
+model_report.txt
+ai_model.joblib
+ai_model_meta.json
+
+# Python cache / virtual env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local/editor files
+.vscode/
+.idea/
+*.log
+log.txt
+*.tmp
+
+# Keep source SQLite amalgamation, ignore downloaded archives
+sqlite/*.zip

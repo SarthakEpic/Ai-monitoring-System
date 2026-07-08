@@ -3,13 +3,34 @@
 #include <windows.h>
 
 #include <string>
-#include <unordered_map>
+#include <vector>
+
+#include "ProcessSnapshot.h"
+#include "ProcessTelemetry.h"
 
 struct ProcessSummary {
     unsigned long pid = 0;
+    unsigned long parentPid = 0;
     std::string name = "N/A";
+    std::string exePath;
     double cpuPercent = 0.0;
     double memoryMB = 0.0;
+    double privateMemoryMB = 0.0;
+    double ioReadKBps = 0.0;
+    double ioWriteKBps = 0.0;
+    double lifetimeSeconds = 0.0;
+    double wasteScore = 0.0;
+    double importanceScore = 50.0;
+    double safetyScore = 0.0;
+    double expectedGainMB = 0.0;
+    std::string category = "UNKNOWN";
+    std::string safety = "UNKNOWN";
+    std::string recommendation = "observe";
+    std::string reason = "insufficient process context";
+    bool isForeground = false;
+    bool hasVisibleWindow = false;
+    bool isTrustedPath = false;
+    bool isSignedTrusted = false;
 };
 
 struct SystemSnapshot {
@@ -22,6 +43,7 @@ struct SystemSnapshot {
     int processCount = 0;
     std::string scenarioLabel = "auto";
     ProcessSummary topProcess;
+    std::vector<ProcessSnapshot> processGenome;
 };
 
 class WindowsMetricsCollector {
@@ -44,7 +66,7 @@ private:
     double ReadMemoryUsage() const;
     double ReadDiskFreePercent(const wchar_t* path) const;
     void ReadNetworkRates(double& downKBps, double& upKBps);
-    void ReadProcessMetrics(int& processCount, ProcessSummary& topProcess);
+    void ReadProcessGenome(SystemSnapshot& snapshot);
 
     CpuTimes previousCpuTimes_{};
     bool hasPreviousCpuTimes_ = false;
@@ -55,6 +77,5 @@ private:
     long long previousNetworkSampleMs_ = 0;
 
     unsigned long processorCount_ = 1;
-    long long previousProcessSampleMs_ = 0;
-    std::unordered_map<unsigned long, unsigned long long> previousProcessTimes_;
+    ProcessTelemetryCollector processTelemetry_;
 };

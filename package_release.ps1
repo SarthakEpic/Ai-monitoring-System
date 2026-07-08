@@ -1,0 +1,62 @@
+param(
+    [string]$Configuration = "Debug",
+    [string]$OutputDir = "release"
+)
+
+$ErrorActionPreference = "Stop"
+
+cmake -S . -B build
+cmake --build build --config $Configuration
+
+$target = Join-Path $OutputDir "PredictiveAutoHeal"
+if (Test-Path $target) {
+    Remove-Item -Recurse -Force $target
+}
+New-Item -ItemType Directory -Path $target | Out-Null
+
+$runtimeFiles = @(
+    "build\$Configuration\PredictiveAutoHeal.exe",
+    "config.txt",
+    "predict_model.py",
+    "inference_service.py",
+    "model_features.py",
+    "labeling.py",
+    "set_training_label.py",
+    "training_data_summary.py",
+    "process_genome_summary.py",
+    "training_label.txt",
+    "PROCESS_GENOME.md",
+    "DATA_COLLECTION.md",
+    "PRODUCTION_READINESS.md",
+    "README.md",
+    "TRANSFER.md",
+    "requirements.txt"
+)
+
+foreach ($file in $runtimeFiles) {
+    if (Test-Path $file) {
+        Copy-Item $file -Destination $target -Force
+    }
+}
+
+$modelFiles = @(
+    "build\ai_model.joblib",
+    "build\ai_model_meta.json",
+    "build\model_report.json",
+    "build\model_report.txt"
+)
+
+foreach ($file in $modelFiles) {
+    if (Test-Path $file) {
+        Copy-Item $file -Destination $target -Force
+    }
+}
+
+$zipPath = Join-Path $OutputDir "PredictiveAutoHeal.zip"
+if (Test-Path $zipPath) {
+    Remove-Item -Force $zipPath
+}
+Compress-Archive -Path (Join-Path $target "*") -DestinationPath $zipPath
+
+Write-Host "Release folder: $target"
+Write-Host "Release zip: $zipPath"

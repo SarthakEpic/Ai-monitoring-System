@@ -50,8 +50,9 @@ class ModelContractTests(unittest.TestCase):
         result = build_prediction_payload(str(runtime_path), str(model_path))
         self.assertEqual(result["contract"], "ai_reliability_v2")
         self.assertEqual(result["class"], "CRITICAL")
-        self.assertAlmostEqual(result["confidence"], 60.0)
+        self.assertAlmostEqual(result["confidence"], 54.4)
         self.assertIn("reason", result)
+        self.assertIn("root_cause", result)
         self.assertGreater(result["risk"], 0.0)
 
         probability = predict_probability_from_runtime_file(str(runtime_path), str(model_path))
