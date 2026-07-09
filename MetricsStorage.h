@@ -7,6 +7,7 @@
 #include "AutoHealPlanner.h"
 #include "DecisionEngine.h"
 #include "HealingVerifier.h"
+#include "RuntimeHealth.h"
 #include "SafetyPolicy.h"
 #include "SystemMetrics.h"
 
@@ -47,6 +48,7 @@ public:
         const HealVerification& verification,
         const SafetyPolicyResult& policyResult
     );
+    bool LogRuntimeHealth(const RuntimeHealthSample& sample);
 
 private:
     bool EnsureSchema();

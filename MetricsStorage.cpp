@@ -283,6 +283,40 @@ bool MetricsStorage::EnsureSchema() {
         return false;
     }
 
+    const char* runtimeHealthSql =
+        "CREATE TABLE IF NOT EXISTS runtime_health_samples ("
+        "time INTEGER PRIMARY KEY, "
+        "status TEXT DEFAULT 'STARTING', "
+        "summary TEXT DEFAULT '', "
+        "prediction_source TEXT DEFAULT '', "
+        "prediction_path TEXT DEFAULT '', "
+        "last_failure TEXT DEFAULT 'none', "
+        "availability_score REAL DEFAULT 0, "
+        "model_success_rate REAL DEFAULT 100, "
+        "fallback_rate REAL DEFAULT 0, "
+        "storage_success_rate REAL DEFAULT 100, "
+        "avg_prediction_latency_ms REAL DEFAULT 0, "
+        "last_prediction_latency_ms REAL DEFAULT 0, "
+        "total_cycles INTEGER DEFAULT 0, "
+        "model_attempts INTEGER DEFAULT 0, "
+        "model_successes INTEGER DEFAULT 0, "
+        "model_failures INTEGER DEFAULT 0, "
+        "service_successes INTEGER DEFAULT 0, "
+        "process_successes INTEGER DEFAULT 0, "
+        "fallback_predictions INTEGER DEFAULT 0, "
+        "cached_predictions INTEGER DEFAULT 0, "
+        "warmup_predictions INTEGER DEFAULT 0, "
+        "storage_writes INTEGER DEFAULT 0, "
+        "storage_failures INTEGER DEFAULT 0, "
+        "alerts INTEGER DEFAULT 0, "
+        "service_running INTEGER DEFAULT 0, "
+        "storage_ready INTEGER DEFAULT 0);";
+
+    if (sqlite3_exec(db_, runtimeHealthSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
     const char* processIndexSql =
         "CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples(time);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_category_safety ON process_samples(category, safety);"
@@ -291,7 +325,8 @@ bool MetricsStorage::EnsureSchema() {
         "CREATE INDEX IF NOT EXISTS idx_decision_audits_level ON decision_audits(level, root_cause, safety_gate);"
         "CREATE INDEX IF NOT EXISTS idx_heal_plans_status ON heal_plans(status, action_type, gate);"
         "CREATE INDEX IF NOT EXISTS idx_heal_verifications_status ON heal_verifications(status, outcome_label, action_name);"
-        "CREATE INDEX IF NOT EXISTS idx_safety_policy_level ON safety_policy_evaluations(level, reason_code, target_name);";
+        "CREATE INDEX IF NOT EXISTS idx_safety_policy_level ON safety_policy_evaluations(level, reason_code, target_name);"
+        "CREATE INDEX IF NOT EXISTS idx_runtime_health_status ON runtime_health_samples(status, prediction_source, prediction_path);";
 
     if (sqlite3_exec(db_, processIndexSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -312,7 +347,8 @@ bool MetricsStorage::EnsureSchema() {
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(7, 'decision_audits', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(8, 'heal_plans', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(9, 'heal_verifications', strftime('%s','now'));"
-        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(10, 'safety_policy_evaluations', strftime('%s','now'));";
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(10, 'safety_policy_evaluations', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(11, 'runtime_health_samples', strftime('%s','now'));";
 
     if (sqlite3_exec(db_, migrationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -649,6 +685,66 @@ bool MetricsStorage::LogSafetyPolicy(
     return ok;
 }
 
+bool MetricsStorage::LogRuntimeHealth(const RuntimeHealthSample& sample) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO runtime_health_samples("
+        "time, status, summary, prediction_source, prediction_path, last_failure, availability_score, "
+        "model_success_rate, fallback_rate, storage_success_rate, avg_prediction_latency_ms, last_prediction_latency_ms, "
+        "total_cycles, model_attempts, model_successes, model_failures, service_successes, process_successes, "
+        "fallback_predictions, cached_predictions, warmup_predictions, storage_writes, storage_failures, alerts, "
+        "service_running, storage_ready"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(sample.timestamp));
+    sqlite3_bind_text(stmt, 2, sample.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, sample.summary.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, sample.predictionSource.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, sample.predictionPath.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, sample.lastFailure.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 7, sample.availabilityScore);
+    sqlite3_bind_double(stmt, 8, sample.modelSuccessRate);
+    sqlite3_bind_double(stmt, 9, sample.fallbackRate);
+    sqlite3_bind_double(stmt, 10, sample.storageSuccessRate);
+    sqlite3_bind_double(stmt, 11, sample.avgPredictionLatencyMs);
+    sqlite3_bind_double(stmt, 12, sample.lastPredictionLatencyMs);
+    sqlite3_bind_int(stmt, 13, sample.totalCycles);
+    sqlite3_bind_int(stmt, 14, sample.modelAttempts);
+    sqlite3_bind_int(stmt, 15, sample.modelSuccesses);
+    sqlite3_bind_int(stmt, 16, sample.modelFailures);
+    sqlite3_bind_int(stmt, 17, sample.serviceSuccesses);
+    sqlite3_bind_int(stmt, 18, sample.processSuccesses);
+    sqlite3_bind_int(stmt, 19, sample.fallbackPredictions);
+    sqlite3_bind_int(stmt, 20, sample.cachedPredictions);
+    sqlite3_bind_int(stmt, 21, sample.warmupPredictions);
+    sqlite3_bind_int(stmt, 22, sample.storageWrites);
+    sqlite3_bind_int(stmt, 23, sample.storageFailures);
+    sqlite3_bind_int(stmt, 24, sample.alerts);
+    sqlite3_bind_int(stmt, 25, sample.serviceRunning ? 1 : 0);
+    sqlite3_bind_int(stmt, 26, sample.storageReady ? 1 : 0);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+
+    if (ok) {
+        const long long cutoff = sample.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+        sqlite3_stmt* retentionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM runtime_health_samples WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        }
+    }
+
+    return ok;
+}
 bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots) {
     const char* insertSql =
         "INSERT INTO metrics(time, cpu, mem, disk, net_down_kbps, net_up_kbps, process_count, scenario_label, top_process, top_process_cpu, top_process_mem) "
