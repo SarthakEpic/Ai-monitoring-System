@@ -30,7 +30,10 @@ Each process is classified into one category:
 
 - `SYSTEM_CRITICAL`
 - `SECURITY`
+- `FOREGROUND_FULLSCREEN_APP`
 - `FOREGROUND_APP`
+- `ACTIVE_APP_FAMILY`
+- `RECENT_USER_APP`
 - `USER_APP`
 - `BROWSER_CHILD`
 - `UPDATER_SYNC`
@@ -47,6 +50,19 @@ Each process also gets a safety level:
 - `OBSERVE_ONLY`: visible or service-like, so only observe for now.
 - `CANDIDATE`: possible future optimization target.
 - `CAUTIOUS`: unknown or not trusted enough for automatic optimization.
+
+## User Intent Integration
+
+The genome engine now receives the current User Intent snapshot.
+
+That means it protects:
+
+- the foreground process
+- fullscreen foreground apps
+- recently active foreground apps
+- browser/IDE/media/game/communication process families that match the active foreground app
+
+This prevents the future autopilot from optimizing the very app the user is trying to use.
 
 ## Scores
 

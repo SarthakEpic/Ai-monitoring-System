@@ -9,8 +9,10 @@ The current version focuses on safe predictive monitoring: it detects resource p
 - Native C++20 / Win32 desktop dashboard
 - CPU, memory, disk, network, process-count, and top-process monitoring
 - Process Genome Engine with per-process CPU, memory, I/O, lifetime, parent PID, foreground/window status, trust signals, category, safety, waste score, and expected gain
+- User Intent Engine that detects active/idle/away state, foreground app, app kind, fullscreen state, focus duration, and recent active apps
 - SQLite time-series telemetry storage
 - SQLite process intelligence history in `process_samples`
+- SQLite user intent history in `user_intent_samples`
 - Background batching pipeline for low-overhead writes
 - AI reliability contract with risk, confidence, class, reason, and recommended action
 - Persistent local inference service so the model loads once instead of spawning Python every prediction
@@ -38,6 +40,9 @@ Metrics Pipeline  ---> SQLite telemetry database
 Process Genome Engine
       |
       v
+User Intent Engine
+      |
+      v
 Feature Engineering
       |
       v
@@ -58,6 +63,7 @@ Dashboard + Alerts + Auto-heal readiness
 | SQLite storage | Working |
 | Dashboard | Working |
 | Process Genome Engine | Working phase 1 |
+| User Intent Engine | Working phase 2 |
 | AI risk prediction | Working prototype |
 | Model confidence/reasons | Working prototype |
 | Persistent inference service | Working |
@@ -87,6 +93,7 @@ PredictiveAutoHeal/
 ├── ProcessTelemetry.*        # Windows process telemetry collector
 ├── ProcessClassifier.*       # Process category and safety classifier
 ├── ProcessGenome.*           # Waste/safety ranking engine
+├── UserIntent.*              # Foreground app and active user intent collector
 ├── DecisionEngine.*          # Risk scoring and recommendations
 ├── AppConfig.*               # Config file parsing
 ├── train_model.py            # Model training and reliability report
@@ -97,8 +104,10 @@ PredictiveAutoHeal/
 ├── set_training_label.py     # Scenario label switcher
 ├── training_data_summary.py  # Data coverage checker
 ├── process_genome_summary.py # Process intelligence coverage checker
+├── user_intent_summary.py    # User intent coverage checker
 ├── test_model_contract.py    # Runtime model contract tests
 ├── PROCESS_GENOME.md         # Process intelligence design notes
+├── USER_INTENT.md            # User intent design notes
 ├── DATA_COLLECTION.md        # Training data collection guide
 ├── TRANSFER.md               # Portable deployment guide
 └── requirements.txt
@@ -188,6 +197,12 @@ Inspect collected process intelligence:
 
 ```powershell
 python process_genome_summary.py --db build\Debug\monitor.db
+```
+
+Inspect collected user intent:
+
+```powershell
+python user_intent_summary.py --db build\Debug\monitor.db
 ```
 
 See `DATA_COLLECTION.md` for safe collection guidance.

@@ -40,18 +40,29 @@ double ResourceWaste(const ProcessSnapshot& process) {
 }
 }
 
-void ProcessClassifier::Classify(ProcessSnapshot& process) {
+void ProcessClassifier::Classify(ProcessSnapshot& process, const UserIntentSnapshot& intent) {
     process.reasons.clear();
 
     const string name = Lower(process.name);
     const string path = Lower(process.exePath);
 
+    const bool foregroundIntent = process.pid != 0 && process.pid == intent.foregroundPid;
+    const bool recentIntent = IsRecentPid(process, intent);
+    const bool sameIntentFamily = IsSameProcessFamily(process, intent);
     const bool critical = process.pid <= 4 || IsCriticalProcessName(name);
     const bool security = IsSecurityProcessName(name);
     const bool service = IsLikelyWindowsService(process);
     const bool browser = IsBrowserProcessName(name);
     const bool updater = IsUpdaterOrSyncName(name);
     const bool trusted = process.isTrustedPath || process.isSignedTrusted;
+
+    process.isForeground = process.isForeground || foregroundIntent;
+    process.isRecentlyActive = recentIntent;
+    process.matchesUserIntent = foregroundIntent || recentIntent || sameIntentFamily;
+    if (foregroundIntent) process.intentRole = intent.isFullscreen ? "foreground_fullscreen" : "foreground";
+    else if (sameIntentFamily) process.intentRole = "active_app_family";
+    else if (recentIntent) process.intentRole = "recent_app";
+    else process.intentRole = "none";
 
     process.isSystemCritical = critical;
     process.wasteScore = ResourceWaste(process);
@@ -62,6 +73,9 @@ void ProcessClassifier::Classify(ProcessSnapshot& process) {
     if (process.ioReadKBps + process.ioWriteKBps >= 1024.0) AddReason(process, "active disk io");
     if (!process.hasVisibleWindow) AddReason(process, "background or hidden");
     if (process.isForeground) AddReason(process, "foreground user app");
+    if (process.isRecentlyActive) AddReason(process, "recently active user app");
+    if (sameIntentFamily) AddReason(process, "same family as active " + intent.appKind);
+    if (intent.isFullscreen && foregroundIntent) AddReason(process, "fullscreen foreground app");
     if (trusted) AddReason(process, "trusted install path/signature");
 
     if (critical) {
@@ -80,6 +94,13 @@ void ProcessClassifier::Classify(ProcessSnapshot& process) {
         process.expectedGainMB = 0.0;
         process.recommendation = "protect";
         AddReason(process, "security/antivirus process");
+    } else if (foregroundIntent && intent.isFullscreen) {
+        process.category = "FOREGROUND_FULLSCREEN_APP";
+        process.safety = "USER_ACTIVE";
+        process.importanceScore = 100.0;
+        process.safetyScore = 0.0;
+        process.expectedGainMB = 0.0;
+        process.recommendation = "protect_fullscreen_app";
     } else if (process.isForeground) {
         process.category = "FOREGROUND_APP";
         process.safety = "USER_ACTIVE";
@@ -87,6 +108,20 @@ void ProcessClassifier::Classify(ProcessSnapshot& process) {
         process.safetyScore = 5.0;
         process.expectedGainMB = 0.0;
         process.recommendation = "protect_foreground";
+    } else if (sameIntentFamily) {
+        process.category = "ACTIVE_APP_FAMILY";
+        process.safety = "USER_ACTIVE";
+        process.importanceScore = 88.0;
+        process.safetyScore = 8.0;
+        process.expectedGainMB = 0.0;
+        process.recommendation = "protect_active_app_family";
+    } else if (recentIntent) {
+        process.category = "RECENT_USER_APP";
+        process.safety = "OBSERVE_ONLY";
+        process.importanceScore = 82.0;
+        process.safetyScore = 18.0;
+        process.expectedGainMB = 0.0;
+        process.recommendation = "observe_recent_user_app";
     } else if (process.hasVisibleWindow) {
         process.category = "USER_APP";
         process.safety = "OBSERVE_ONLY";
@@ -188,6 +223,17 @@ bool ProcessClassifier::IsLikelyWindowsService(const ProcessSnapshot& process) {
     return process.sessionId == 0 ||
            ContainsToken(path, "\\windows\\system32\\") ||
            ContainsToken(path, "\\windows\\syswow64\\");
+}
+
+bool ProcessClassifier::IsRecentPid(const ProcessSnapshot& process, const UserIntentSnapshot& intent) {
+    return find(intent.recentPids.begin(), intent.recentPids.end(), process.pid) != intent.recentPids.end();
+}
+
+bool ProcessClassifier::IsSameProcessFamily(const ProcessSnapshot& process, const UserIntentSnapshot& intent) {
+    if (!intent.protectForegroundFamily) return false;
+    if (intent.foregroundProcess.empty() || process.name.empty()) return false;
+    if (process.pid == intent.foregroundPid) return true;
+    return Lower(process.name) == Lower(intent.foregroundProcess);
 }
 
 string ProcessClassifier::Lower(string value) {

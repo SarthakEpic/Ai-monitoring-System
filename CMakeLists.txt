@@ -17,6 +17,7 @@ add_executable(PredictiveAutoHeal
     ProcessGenome.cpp
     ProcessTelemetry.cpp
     SystemMetrics.cpp
+    UserIntent.cpp
     sqlite3.c
 )
 
@@ -33,8 +34,10 @@ add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
         "${CMAKE_SOURCE_DIR}/set_training_label.py"
         "${CMAKE_SOURCE_DIR}/training_data_summary.py"
         "${CMAKE_SOURCE_DIR}/process_genome_summary.py"
+        "${CMAKE_SOURCE_DIR}/user_intent_summary.py"
         "${CMAKE_SOURCE_DIR}/training_label.txt"
         "${CMAKE_SOURCE_DIR}/PROCESS_GENOME.md"
+        "${CMAKE_SOURCE_DIR}/USER_INTENT.md"
         "${CMAKE_SOURCE_DIR}/DATA_COLLECTION.md"
         "${CMAKE_SOURCE_DIR}/requirements.txt"
         "$<TARGET_FILE_DIR:PredictiveAutoHeal>"

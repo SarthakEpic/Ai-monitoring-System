@@ -22,7 +22,8 @@ def main() -> int:
     db_path = Path(args.db)
     if not db_path.exists():
         print(f"Database not found: {db_path}")
-        return 1
+        print("Run the rebuilt app first, then run this summary again.")
+        return 0
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row

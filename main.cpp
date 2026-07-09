@@ -78,6 +78,13 @@ string g_topProcessCategory = "UNKNOWN";
 string g_topProcessSafety = "UNKNOWN";
 string g_topProcessRecommendation = "observe";
 string g_topProcessReason = "insufficient process context";
+string g_userState = "UNKNOWN";
+string g_foregroundProcess = "N/A";
+string g_foregroundAppKind = "UNKNOWN";
+string g_intentReason = "No foreground intent captured";
+double g_userIdleSeconds = 0.0;
+double g_focusDurationSeconds = 0.0;
+bool g_foregroundFullscreen = false;
 string g_decisionSummary = "System stable";
 string g_decisionReason = "Collecting baseline";
 RiskLevel g_decisionLevel = RiskLevel::Normal;
@@ -948,6 +955,13 @@ void DrawAutoHealPanel(HDC hdc, const RECT& rc,
         DrawTextAt(hdc, rc.left + 14, rc.top + 216, "Waste " + to_string(static_cast<int>(snapshot.topProcess.wasteScore)) + "  Gain " + to_string(static_cast<int>(snapshot.topProcess.expectedGainMB)) + " MB", RGB(170, 180, 195), gFontSmall);
         DrawTextAt(hdc, rc.left + 14, rc.top + 242, ShortenText(snapshot.topProcess.reason, 44), RGB(180, 220, 255), gFontSmall);
     }
+    if ((rc.bottom - rc.top) >= 310) {
+        DrawTextAt(hdc, rc.left + 14, rc.top + 284, "User Intent", RGB(230, 235, 245), gFontSection);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 316, "State " + snapshot.intent.userState + "  Kind " + snapshot.intent.appKind, RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 342, "Focus " + ShortenText(snapshot.intent.foregroundProcess, 30), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 368, "Idle " + to_string(static_cast<int>(snapshot.intent.idleSeconds)) + "s  Focus " + to_string(static_cast<int>(snapshot.intent.focusDurationSeconds)) + "s", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 394, ShortenText(snapshot.intent.reason, 44), RGB(180, 220, 255), gFontSmall);
+    }
 }
 
 void DrawThresholdPanel(HDC hdc, const RECT& rc,
@@ -1106,6 +1120,13 @@ void MonitorThread(HWND hwnd) {
             g_topProcessSafety = snapshot.topProcess.safety;
             g_topProcessRecommendation = snapshot.topProcess.recommendation;
             g_topProcessReason = snapshot.topProcess.reason;
+            g_userState = snapshot.intent.userState;
+            g_foregroundProcess = snapshot.intent.foregroundProcess;
+            g_foregroundAppKind = snapshot.intent.appKind;
+            g_intentReason = snapshot.intent.reason;
+            g_userIdleSeconds = snapshot.intent.idleSeconds;
+            g_focusDurationSeconds = snapshot.intent.focusDurationSeconds;
+            g_foregroundFullscreen = snapshot.intent.isFullscreen;
 
             PushHistory(g_cpuHist, snapshot.cpuUsage, HISTORY_SIZE);
             PushHistory(g_memHist, snapshot.memoryUsage, HISTORY_SIZE);
@@ -1289,6 +1310,9 @@ void MonitorThread(HWND hwnd) {
                 {"top_process_category", snapshot.topProcess.category},
                 {"top_process_safety", snapshot.topProcess.safety},
                 {"top_process_waste", to_string(static_cast<int>(snapshot.topProcess.wasteScore))},
+                {"user_state", snapshot.intent.userState},
+                {"foreground_process", snapshot.intent.foregroundProcess},
+                {"app_kind", snapshot.intent.appKind},
             });
         }
 
@@ -1310,6 +1334,10 @@ void MonitorThread(HWND hwnd) {
                 {"top_process_safety", snapshot.topProcess.safety},
                 {"top_process_waste", to_string(static_cast<int>(snapshot.topProcess.wasteScore))},
                 {"expected_gain_mb", to_string(static_cast<int>(snapshot.topProcess.expectedGainMB))},
+                {"user_state", snapshot.intent.userState},
+                {"foreground_process", snapshot.intent.foregroundProcess},
+                {"app_kind", snapshot.intent.appKind},
+                {"idle_seconds", to_string(static_cast<int>(snapshot.intent.idleSeconds))},
             });
         }
 
@@ -1390,6 +1418,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             snapshot.topProcess.safety = g_topProcessSafety;
             snapshot.topProcess.recommendation = g_topProcessRecommendation;
             snapshot.topProcess.reason = g_topProcessReason;
+            snapshot.intent.userState = g_userState;
+            snapshot.intent.foregroundProcess = g_foregroundProcess;
+            snapshot.intent.appKind = g_foregroundAppKind;
+            snapshot.intent.reason = g_intentReason;
+            snapshot.intent.idleSeconds = g_userIdleSeconds;
+            snapshot.intent.focusDurationSeconds = g_focusDurationSeconds;
+            snapshot.intent.isFullscreen = g_foregroundFullscreen;
             aiProb = g_aiProb;
             aiConfidence = g_aiConfidence;
             riskScore = g_riskScore;
@@ -1443,12 +1478,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawTextAt(memDC, 18, 518, "TOP   " + ShortenText(snapshot.topProcess.name, 17), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 542, "TYPE  " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.category)), 16), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 566, "SAFE  " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.safety)), 16), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 590, "INTNT " + ShortenText(snapshot.intent.userState + "/" + snapshot.intent.appKind, 17), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 614, "FOCUS " + ShortenText(snapshot.intent.foregroundProcess, 17), RGB(170, 180, 195), gFontSmall);
 
-        DrawTextAt(memDC, 18, 614, "Runtime", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(memDC, 18, 646, "MODE  " + FormatModeLabel(performanceMode), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 670, "MODEL " + to_string(aiPredictIntervalTicks) + " sec", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 694, string("DB    ") + (storageReady ? "ACTIVE" : "OFFLINE"), storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
-        DrawTextAt(memDC, 18, 718, "LABEL " + snapshot.scenarioLabel, RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 662, "Runtime", RGB(230, 235, 245), gFontSection);
+        DrawTextAt(memDC, 18, 694, "MODE  " + FormatModeLabel(performanceMode), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 718, "MODEL " + to_string(aiPredictIntervalTicks) + " sec", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 742, string("DB    ") + (storageReady ? "ACTIVE" : "OFFLINE"), storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
+        DrawTextAt(memDC, 18, 766, "LABEL " + snapshot.scenarioLabel, RGB(170, 180, 195), gFontSmall);
 
         int mainX = sidebarW + pad;
         int mainW = client.right - mainX - pad;

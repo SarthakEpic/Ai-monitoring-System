@@ -23,6 +23,8 @@ struct ProcessSnapshot {
     unsigned long sessionId = 0;
 
     bool isForeground = false;
+    bool isRecentlyActive = false;
+    bool matchesUserIntent = false;
     bool hasVisibleWindow = false;
     bool isTrustedPath = false;
     bool isSignedTrusted = false;
@@ -31,6 +33,7 @@ struct ProcessSnapshot {
     std::string signatureStatus = "not_checked";
     std::string category = "UNKNOWN";
     std::string safety = "UNKNOWN";
+    std::string intentRole = "none";
     std::string recommendation = "observe";
     std::string reason = "insufficient process context";
     std::vector<std::string> reasons;

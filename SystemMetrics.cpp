@@ -54,6 +54,7 @@ SystemSnapshot WindowsMetricsCollector::Collect() {
     snapshot.memoryUsage = ReadMemoryUsage();
     snapshot.diskFree = ReadDiskFreePercent(L"C:\\");
     ReadNetworkRates(snapshot.netDownKBps, snapshot.netUpKBps);
+    snapshot.intent = userIntent_.Capture();
     ReadProcessGenome(snapshot);
     return snapshot;
 }
@@ -145,7 +146,7 @@ void WindowsMetricsCollector::ReadNetworkRates(double& downKBps, double& upKBps)
 
 void WindowsMetricsCollector::ReadProcessGenome(SystemSnapshot& snapshot) {
     auto processes = processTelemetry_.Collect();
-    ProcessGenomeEngine::Annotate(processes);
+    ProcessGenomeEngine::Annotate(processes, snapshot.intent);
 
     snapshot.processCount = static_cast<int>(processes.size());
     snapshot.topProcess = ProcessGenomeEngine::SelectTopPressureProcess(processes);

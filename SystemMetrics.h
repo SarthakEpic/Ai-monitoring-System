@@ -7,6 +7,7 @@
 
 #include "ProcessSnapshot.h"
 #include "ProcessTelemetry.h"
+#include "UserIntent.h"
 
 struct ProcessSummary {
     unsigned long pid = 0;
@@ -25,9 +26,12 @@ struct ProcessSummary {
     double expectedGainMB = 0.0;
     std::string category = "UNKNOWN";
     std::string safety = "UNKNOWN";
+    std::string intentRole = "none";
     std::string recommendation = "observe";
     std::string reason = "insufficient process context";
     bool isForeground = false;
+    bool isRecentlyActive = false;
+    bool matchesUserIntent = false;
     bool hasVisibleWindow = false;
     bool isTrustedPath = false;
     bool isSignedTrusted = false;
@@ -44,6 +48,7 @@ struct SystemSnapshot {
     std::string scenarioLabel = "auto";
     ProcessSummary topProcess;
     std::vector<ProcessSnapshot> processGenome;
+    UserIntentSnapshot intent;
 };
 
 class WindowsMetricsCollector {
@@ -78,4 +83,5 @@ private:
 
     unsigned long processorCount_ = 1;
     ProcessTelemetryCollector processTelemetry_;
+    UserIntentEngine userIntent_;
 };

@@ -1,6 +1,7 @@
 #include "MetricsStorage.h"
 
 #include <ctime>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,15 @@ using namespace std;
 
 namespace {
 constexpr long long PROCESS_SAMPLE_RETENTION_SECONDS = 7LL * 24LL * 60LL * 60LL;
+
+string JoinStrings(const vector<string>& values) {
+    ostringstream oss;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i) oss << "|";
+        oss << values[i];
+    }
+    return oss.str();
+}
 }
 
 MetricsStorage::~MetricsStorage() {
@@ -68,6 +78,7 @@ bool MetricsStorage::EnsureSchema() {
         "exe_path TEXT DEFAULT '', "
         "category TEXT DEFAULT 'UNKNOWN', "
         "safety TEXT DEFAULT 'UNKNOWN', "
+        "intent_role TEXT DEFAULT 'none', "
         "recommendation TEXT DEFAULT 'observe', "
         "reason TEXT DEFAULT '', "
         "cpu REAL DEFAULT 0, "
@@ -81,6 +92,8 @@ bool MetricsStorage::EnsureSchema() {
         "priority_class INTEGER DEFAULT 0, "
         "session_id INTEGER DEFAULT 0, "
         "is_foreground INTEGER DEFAULT 0, "
+        "is_recently_active INTEGER DEFAULT 0, "
+        "matches_user_intent INTEGER DEFAULT 0, "
         "has_visible_window INTEGER DEFAULT 0, "
         "trusted_path INTEGER DEFAULT 0, "
         "signed_trusted INTEGER DEFAULT 0, "
@@ -96,10 +109,32 @@ bool MetricsStorage::EnsureSchema() {
         return false;
     }
 
+    const char* intentSamplesSql =
+        "CREATE TABLE IF NOT EXISTS user_intent_samples ("
+        "time INTEGER PRIMARY KEY, "
+        "foreground_pid INTEGER DEFAULT 0, "
+        "foreground_process TEXT DEFAULT '', "
+        "foreground_path TEXT DEFAULT '', "
+        "foreground_title TEXT DEFAULT '', "
+        "app_kind TEXT DEFAULT 'UNKNOWN', "
+        "user_state TEXT DEFAULT 'UNKNOWN', "
+        "reason TEXT DEFAULT '', "
+        "idle_seconds REAL DEFAULT 0, "
+        "focus_duration_seconds REAL DEFAULT 0, "
+        "is_fullscreen INTEGER DEFAULT 0, "
+        "protect_foreground_family INTEGER DEFAULT 0, "
+        "recent_processes TEXT DEFAULT '');";
+
+    if (sqlite3_exec(db_, intentSamplesSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
     const char* processIndexSql =
         "CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples(time);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_category_safety ON process_samples(category, safety);"
-        "CREATE INDEX IF NOT EXISTS idx_process_samples_waste ON process_samples(waste_score DESC);";
+        "CREATE INDEX IF NOT EXISTS idx_process_samples_waste ON process_samples(waste_score DESC);"
+        "CREATE INDEX IF NOT EXISTS idx_user_intent_samples_state ON user_intent_samples(user_state, app_kind);";
 
     if (sqlite3_exec(db_, processIndexSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -115,7 +150,8 @@ bool MetricsStorage::EnsureSchema() {
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(2, 'network_process_columns', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(3, 'scenario_labels', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(4, 'process_genome_samples', strftime('%s','now'));"
-        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(5, 'process_sample_indexes_retention', strftime('%s','now'));";
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(5, 'process_sample_indexes_retention', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(6, 'user_intent_samples', strftime('%s','now'));";
 
     if (sqlite3_exec(db_, migrationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -128,11 +164,18 @@ bool MetricsStorage::EnsureSchema() {
            EnsureColumn("scenario_label", "TEXT DEFAULT 'auto'") &&
            EnsureColumn("top_process", "TEXT DEFAULT ''") &&
            EnsureColumn("top_process_cpu", "REAL DEFAULT 0") &&
-           EnsureColumn("top_process_mem", "REAL DEFAULT 0");
+           EnsureColumn("top_process_mem", "REAL DEFAULT 0") &&
+           EnsureTableColumn("process_samples", "intent_role", "TEXT DEFAULT 'none'") &&
+           EnsureTableColumn("process_samples", "is_recently_active", "INTEGER DEFAULT 0") &&
+           EnsureTableColumn("process_samples", "matches_user_intent", "INTEGER DEFAULT 0");
 }
 
 bool MetricsStorage::EnsureColumn(const string& columnName, const string& columnDefinition) {
-    const string pragma = "PRAGMA table_info(metrics);";
+    return EnsureTableColumn("metrics", columnName, columnDefinition);
+}
+
+bool MetricsStorage::EnsureTableColumn(const string& tableName, const string& columnName, const string& columnDefinition) {
+    const string pragma = "PRAGMA table_info(" + tableName + ");";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, pragma.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
         return false;
@@ -150,7 +193,7 @@ bool MetricsStorage::EnsureColumn(const string& columnName, const string& column
 
     if (columnExists) return true;
 
-    const string alterSql = "ALTER TABLE metrics ADD COLUMN " + columnName + " " + columnDefinition + ";";
+    const string alterSql = "ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnDefinition + ";";
     char* errMsg = nullptr;
     if (sqlite3_exec(db_, alterSql.c_str(), nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -174,11 +217,16 @@ bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots)
         "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);";
     const char* processInsertSql =
         "INSERT OR REPLACE INTO process_samples("
-        "time, pid, parent_pid, name, exe_path, category, safety, recommendation, reason, "
+        "time, pid, parent_pid, name, exe_path, category, safety, intent_role, recommendation, reason, "
         "cpu, working_set_mb, private_mb, io_read_kbps, io_write_kbps, lifetime_sec, "
-        "thread_count, handle_count, priority_class, session_id, is_foreground, has_visible_window, "
+        "thread_count, handle_count, priority_class, session_id, is_foreground, is_recently_active, matches_user_intent, has_visible_window, "
         "trusted_path, signed_trusted, signature_status, waste_score, importance_score, safety_score, expected_gain_mb"
-        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28);";
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31);";
+    const char* intentInsertSql =
+        "INSERT OR REPLACE INTO user_intent_samples("
+        "time, foreground_pid, foreground_process, foreground_path, foreground_title, app_kind, user_state, reason, "
+        "idle_seconds, focus_duration_seconds, is_fullscreen, protect_foreground_family, recent_processes"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);";
 
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -189,11 +237,18 @@ bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots)
         sqlite3_finalize(stmt);
         return false;
     }
+    sqlite3_stmt* intentStmt = nullptr;
+    if (sqlite3_prepare_v2(db_, intentInsertSql, -1, &intentStmt, nullptr) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        sqlite3_finalize(processStmt);
+        return false;
+    }
 
     char* errMsg = nullptr;
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE TRANSACTION;", nullptr, nullptr, &errMsg) != SQLITE_OK) {
         sqlite3_finalize(stmt);
         sqlite3_finalize(processStmt);
+        sqlite3_finalize(intentStmt);
         if (errMsg) sqlite3_free(errMsg);
         return false;
     }
@@ -220,6 +275,28 @@ bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots)
         sqlite3_reset(stmt);
         sqlite3_clear_bindings(stmt);
 
+        sqlite3_bind_int64(intentStmt, 1, static_cast<sqlite3_int64>(snapshot.timestamp));
+        sqlite3_bind_int64(intentStmt, 2, static_cast<sqlite3_int64>(snapshot.intent.foregroundPid));
+        sqlite3_bind_text(intentStmt, 3, snapshot.intent.foregroundProcess.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(intentStmt, 4, snapshot.intent.foregroundPath.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(intentStmt, 5, snapshot.intent.foregroundTitle.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(intentStmt, 6, snapshot.intent.appKind.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(intentStmt, 7, snapshot.intent.userState.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(intentStmt, 8, snapshot.intent.reason.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(intentStmt, 9, snapshot.intent.idleSeconds);
+        sqlite3_bind_double(intentStmt, 10, snapshot.intent.focusDurationSeconds);
+        sqlite3_bind_int(intentStmt, 11, snapshot.intent.isFullscreen ? 1 : 0);
+        sqlite3_bind_int(intentStmt, 12, snapshot.intent.protectForegroundFamily ? 1 : 0);
+        const string recentProcesses = JoinStrings(snapshot.intent.recentProcesses);
+        sqlite3_bind_text(intentStmt, 13, recentProcesses.c_str(), -1, SQLITE_TRANSIENT);
+
+        if (sqlite3_step(intentStmt) != SQLITE_DONE) {
+            ok = false;
+            break;
+        }
+        sqlite3_reset(intentStmt);
+        sqlite3_clear_bindings(intentStmt);
+
         for (const auto& process : snapshot.processGenome) {
             sqlite3_bind_int64(processStmt, 1, static_cast<sqlite3_int64>(snapshot.timestamp));
             sqlite3_bind_int64(processStmt, 2, static_cast<sqlite3_int64>(process.pid));
@@ -228,27 +305,30 @@ bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots)
             sqlite3_bind_text(processStmt, 5, process.exePath.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(processStmt, 6, process.category.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(processStmt, 7, process.safety.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(processStmt, 8, process.recommendation.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(processStmt, 9, process.reason.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_double(processStmt, 10, process.cpuPercent);
-            sqlite3_bind_double(processStmt, 11, process.workingSetMB);
-            sqlite3_bind_double(processStmt, 12, process.privateBytesMB);
-            sqlite3_bind_double(processStmt, 13, process.ioReadKBps);
-            sqlite3_bind_double(processStmt, 14, process.ioWriteKBps);
-            sqlite3_bind_double(processStmt, 15, process.lifetimeSeconds);
-            sqlite3_bind_int(processStmt, 16, process.threadCount);
-            sqlite3_bind_int(processStmt, 17, process.handleCount);
-            sqlite3_bind_int(processStmt, 18, static_cast<int>(process.priorityClass));
-            sqlite3_bind_int(processStmt, 19, static_cast<int>(process.sessionId));
-            sqlite3_bind_int(processStmt, 20, process.isForeground ? 1 : 0);
-            sqlite3_bind_int(processStmt, 21, process.hasVisibleWindow ? 1 : 0);
-            sqlite3_bind_int(processStmt, 22, process.isTrustedPath ? 1 : 0);
-            sqlite3_bind_int(processStmt, 23, process.isSignedTrusted ? 1 : 0);
-            sqlite3_bind_text(processStmt, 24, process.signatureStatus.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_double(processStmt, 25, process.wasteScore);
-            sqlite3_bind_double(processStmt, 26, process.importanceScore);
-            sqlite3_bind_double(processStmt, 27, process.safetyScore);
-            sqlite3_bind_double(processStmt, 28, process.expectedGainMB);
+            sqlite3_bind_text(processStmt, 8, process.intentRole.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(processStmt, 9, process.recommendation.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(processStmt, 10, process.reason.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(processStmt, 11, process.cpuPercent);
+            sqlite3_bind_double(processStmt, 12, process.workingSetMB);
+            sqlite3_bind_double(processStmt, 13, process.privateBytesMB);
+            sqlite3_bind_double(processStmt, 14, process.ioReadKBps);
+            sqlite3_bind_double(processStmt, 15, process.ioWriteKBps);
+            sqlite3_bind_double(processStmt, 16, process.lifetimeSeconds);
+            sqlite3_bind_int(processStmt, 17, process.threadCount);
+            sqlite3_bind_int(processStmt, 18, process.handleCount);
+            sqlite3_bind_int(processStmt, 19, static_cast<int>(process.priorityClass));
+            sqlite3_bind_int(processStmt, 20, static_cast<int>(process.sessionId));
+            sqlite3_bind_int(processStmt, 21, process.isForeground ? 1 : 0);
+            sqlite3_bind_int(processStmt, 22, process.isRecentlyActive ? 1 : 0);
+            sqlite3_bind_int(processStmt, 23, process.matchesUserIntent ? 1 : 0);
+            sqlite3_bind_int(processStmt, 24, process.hasVisibleWindow ? 1 : 0);
+            sqlite3_bind_int(processStmt, 25, process.isTrustedPath ? 1 : 0);
+            sqlite3_bind_int(processStmt, 26, process.isSignedTrusted ? 1 : 0);
+            sqlite3_bind_text(processStmt, 27, process.signatureStatus.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(processStmt, 28, process.wasteScore);
+            sqlite3_bind_double(processStmt, 29, process.importanceScore);
+            sqlite3_bind_double(processStmt, 30, process.safetyScore);
+            sqlite3_bind_double(processStmt, 31, process.expectedGainMB);
 
             if (sqlite3_step(processStmt) != SQLITE_DONE) {
                 ok = false;
@@ -264,10 +344,24 @@ bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots)
 
     sqlite3_finalize(stmt);
     sqlite3_finalize(processStmt);
+    sqlite3_finalize(intentStmt);
 
     if (ok && !snapshots.empty()) {
         sqlite3_stmt* retentionStmt = nullptr;
         const char* retentionSql = "DELETE FROM process_samples WHERE time < ?1;";
+        if (sqlite3_prepare_v2(db_, retentionSql, -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            const long long cutoff = snapshots.back().timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        } else {
+            ok = false;
+        }
+    }
+
+    if (ok && !snapshots.empty()) {
+        sqlite3_stmt* retentionStmt = nullptr;
+        const char* retentionSql = "DELETE FROM user_intent_samples WHERE time < ?1;";
         if (sqlite3_prepare_v2(db_, retentionSql, -1, &retentionStmt, nullptr) == SQLITE_OK) {
             const long long cutoff = snapshots.back().timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
             sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));

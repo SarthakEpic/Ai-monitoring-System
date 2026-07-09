@@ -6,9 +6,9 @@
 
 using namespace std;
 
-void ProcessGenomeEngine::Annotate(vector<ProcessSnapshot>& processes) {
+void ProcessGenomeEngine::Annotate(vector<ProcessSnapshot>& processes, const UserIntentSnapshot& intent) {
     for (auto& process : processes) {
-        ProcessClassifier::Classify(process);
+        ProcessClassifier::Classify(process, intent);
     }
 }
 
@@ -69,6 +69,7 @@ ProcessSummary ProcessGenomeEngine::ToSummary(const ProcessSnapshot& process) {
     summary.lifetimeSeconds = process.lifetimeSeconds;
     summary.category = process.category;
     summary.safety = process.safety;
+    summary.intentRole = process.intentRole;
     summary.recommendation = process.recommendation;
     summary.reason = process.reason;
     summary.wasteScore = process.wasteScore;
@@ -76,6 +77,8 @@ ProcessSummary ProcessGenomeEngine::ToSummary(const ProcessSnapshot& process) {
     summary.safetyScore = process.safetyScore;
     summary.expectedGainMB = process.expectedGainMB;
     summary.isForeground = process.isForeground;
+    summary.isRecentlyActive = process.isRecentlyActive;
+    summary.matchesUserIntent = process.matchesUserIntent;
     summary.hasVisibleWindow = process.hasVisibleWindow;
     summary.isTrustedPath = process.isTrustedPath;
     summary.isSignedTrusted = process.isSignedTrusted;

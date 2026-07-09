@@ -4,10 +4,11 @@
 
 #include "ProcessSnapshot.h"
 #include "SystemMetrics.h"
+#include "UserIntent.h"
 
 class ProcessGenomeEngine {
 public:
-    static void Annotate(std::vector<ProcessSnapshot>& processes);
+    static void Annotate(std::vector<ProcessSnapshot>& processes, const UserIntentSnapshot& intent);
     static ProcessSummary SelectTopPressureProcess(const std::vector<ProcessSnapshot>& processes);
     static std::vector<ProcessSnapshot> TopCandidates(const std::vector<ProcessSnapshot>& processes, size_t limit);
 

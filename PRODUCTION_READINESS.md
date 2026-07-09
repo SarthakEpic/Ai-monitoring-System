@@ -38,6 +38,7 @@ Before enabling real healing:
 - Default to dry-run mode.
 - Keep `AUTO_HEAL_ENABLED=0` until model readiness is `production_candidate`.
 - Use Process Genome safety categories before any action.
+- Use User Intent protection before any action.
 - Maintain process and service allowlists.
 - Maintain denylist for critical system processes.
 - Require high model confidence.
@@ -52,6 +53,7 @@ Before enabling real healing:
 - Write structured application logs.
 - Persist prediction source, risk, confidence, class, reason, and action recommendation.
 - Persist process category, safety, waste score, and expected gain.
+- Persist user intent state, foreground app, app kind, fullscreen state, and focus duration.
 - Track SQLite write failures.
 - Track Python service and future ONNX inference failures.
 - Display model readiness, feature count, and training timestamp.
