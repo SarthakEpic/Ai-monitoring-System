@@ -13,12 +13,14 @@ The current version focuses on safe predictive monitoring: it detects resource p
 - Safe Optimization Decision Engine with root-cause diagnosis, action targets, safety gates, cooldowns, dry-run recommendations, and blocked reasons
 - Auto-Heal Dry-Run Planner with pre-checks, simulated execution steps, post-checks, rollback notes, readiness score, and audit trail
 - Post-Heal Verification Simulator with estimated before/after CPU, memory, disk, network, and risk outcomes
+- Safety Policy Engine with forbidden/review/simulation/execution-eligible guardrails
 - SQLite time-series telemetry storage
 - SQLite process intelligence history in `process_samples`
 - SQLite user intent history in `user_intent_samples`
 - SQLite decision audit history in `decision_audits`
 - SQLite auto-heal plan history in `heal_plans`
 - SQLite heal verification history in `heal_verifications`
+- SQLite safety policy history in `safety_policy_evaluations`
 - Background batching pipeline for low-overhead writes
 - AI reliability contract with risk, confidence, class, reason, and recommended action
 - Persistent local inference service so the model loads once instead of spawning Python every prediction
@@ -64,6 +66,9 @@ Auto-Heal Dry-Run Planner
 Post-Heal Verification Simulator
       |
       v
+Safety Policy Engine
+      |
+      v
 Dashboard + Alerts + Auto-heal readiness
 ```
 
@@ -79,6 +84,7 @@ Dashboard + Alerts + Auto-heal readiness
 | Safe Optimization Decision Engine | Working phase 3 |
 | Auto-Heal Dry-Run Planner | Working phase 4 |
 | Post-Heal Verification Simulator | Working phase 5 |
+| Safety Policy Engine | Working phase 6 |
 | AI risk prediction | Working prototype |
 | Model confidence/reasons | Working prototype |
 | Persistent inference service | Working |
@@ -112,6 +118,7 @@ PredictiveAutoHeal/
 ├── DecisionEngine.*          # Risk scoring, root cause, safety gates, and dry-run recommendations
 ├── AutoHealPlanner.*         # Dry-run healing plan generation and safety playbooks
 ├── HealingVerifier.*         # Before/after healing simulation and verification labels
+├── SafetyPolicy.*            # Final policy guardrails and execution eligibility
 ├── AppConfig.*               # Config file parsing
 ├── train_model.py            # Model training and reliability report
 ├── predict_model.py          # Runtime prediction CLI
@@ -125,12 +132,14 @@ PredictiveAutoHeal/
 ├── decision_audit_summary.py # Decision/audit coverage checker
 ├── heal_plan_summary.py      # Auto-heal plan coverage checker
 ├── heal_verification_summary.py # Heal verification coverage checker
+├── safety_policy_summary.py  # Safety policy gate checker
 ├── test_model_contract.py    # Runtime model contract tests
 ├── PROCESS_GENOME.md         # Process intelligence design notes
 ├── USER_INTENT.md            # User intent design notes
 ├── DECISION_ENGINE.md        # Safe optimization decision design notes
 ├── AUTO_HEAL_PLANNER.md      # Dry-run healing planner design notes
 ├── HEALING_VERIFIER.md       # Post-heal verification simulator notes
+├── SAFETY_POLICY.md          # Final safety-policy guardrails notes
 ├── DATA_COLLECTION.md        # Training data collection guide
 ├── TRANSFER.md               # Portable deployment guide
 └── requirements.txt
@@ -246,6 +255,12 @@ Inspect Stage 5 healing verification simulations:
 python heal_verification_summary.py --db build\Debug\monitor.db
 ```
 
+Inspect Stage 6 safety policy gates:
+
+```powershell
+python safety_policy_summary.py --db build\Debug\monitor.db
+```
+
 See `DATA_COLLECTION.md` for safe collection guidance.
 
 ## Train The Model
@@ -317,6 +332,14 @@ heal_verifications
 
 Each verification includes estimated risk before/after, CPU before/after, memory before/after, disk before/after, network before/after, risk delta, outcome label, success criteria, failure criteria, and evidence.
 
+Stage 6 records safety policy evaluations in SQLite:
+
+```text
+safety_policy_evaluations
+```
+
+Each evaluation includes policy level, reason code, policy score, target protection flags, allow/deny status, simulation-only status, review requirement, and execution eligibility.
+
 The persistent inference service writes:
 
 ```text
@@ -343,7 +366,7 @@ Real healing should only be enabled after:
 - Rollback strategy
 - Operator-visible audit logs
 
-The current Stage 3 decision engine, Stage 4 planner, and Stage 5 verifier already produce dry-run recommendations, safety gates, healing playbooks, and simulated before/after proof. Execution remains blocked by default.
+The current Stage 3 decision engine, Stage 4 planner, Stage 5 verifier, and Stage 6 policy engine already produce dry-run recommendations, safety gates, healing playbooks, simulated before/after proof, and final policy guardrails. Execution remains blocked by default.
 
 ## Portable Deployment
 
@@ -370,7 +393,7 @@ requirements.txt
 - Add migration tests for old database files
 - Add Windows service mode
 - Add signed release packaging
-- Add safe auto-healing execution after model readiness, planner-readiness, and verification-readiness gates pass
+- Add safe auto-healing execution after model, planner, verification, and policy gates pass
 - Add Linux collector after Windows stabilizes
 
 ## Portfolio Notes

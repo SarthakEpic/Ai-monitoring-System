@@ -50,6 +50,7 @@ Before enabling real healing:
 - Require pre-check, post-check, and rollback notes for every future action.
 - Require Stage 5 simulated verification before any action.
 - Require real post-action verification before autonomous execution is trusted.
+- Require Stage 6 policy level `EXECUTION_ELIGIBLE` before any future executor runs.
 - Add manual override / disable switch.
 - Verify the system improved after action.
 
@@ -62,6 +63,7 @@ Before enabling real healing:
 - Persist decision root cause, target, safety gate, cooldown, blocked reason, and dry-run status.
 - Persist auto-heal plan status, readiness, target, expected impact, pre-check, post-check, and rollback note.
 - Persist heal verification status, outcome label, estimated before/after metrics, risk delta, and evidence.
+- Persist safety policy level, reason code, policy score, target guardrails, and execution eligibility.
 - Track SQLite write failures.
 - Track Python service and future ONNX inference failures.
 - Display model readiness, feature count, and training timestamp.
@@ -86,6 +88,6 @@ Before enabling real healing:
 
 ## Current Honest Status
 
-PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates, dry-run healing plans, and simulated before/after verification.
+PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates, dry-run healing plans, simulated before/after verification, and final policy guardrails.
 
 It is not yet production-ready for autonomous healing. The next production milestone is improving CRITICAL and RECOVERY reliability using scenario-labeled data.

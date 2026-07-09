@@ -7,6 +7,7 @@
 #include "AutoHealPlanner.h"
 #include "DecisionEngine.h"
 #include "HealingVerifier.h"
+#include "SafetyPolicy.h"
 #include "SystemMetrics.h"
 
 struct sqlite3;
@@ -38,6 +39,13 @@ public:
         const DecisionResult& decision,
         const HealPlan& plan,
         const HealVerification& verification
+    );
+    bool LogSafetyPolicy(
+        const SystemSnapshot& snapshot,
+        const DecisionResult& decision,
+        const HealPlan& plan,
+        const HealVerification& verification,
+        const SafetyPolicyResult& policyResult
     );
 
 private:

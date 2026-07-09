@@ -245,6 +245,44 @@ bool MetricsStorage::EnsureSchema() {
         return false;
     }
 
+    const char* safetyPolicySql =
+        "CREATE TABLE IF NOT EXISTS safety_policy_evaluations ("
+        "time INTEGER PRIMARY KEY, "
+        "level TEXT DEFAULT 'SIMULATION_ONLY', "
+        "reason_code TEXT DEFAULT 'NO_ACTION', "
+        "reason TEXT DEFAULT '', "
+        "target_pid INTEGER DEFAULT 0, "
+        "target_name TEXT DEFAULT '', "
+        "target_category TEXT DEFAULT 'UNKNOWN', "
+        "target_safety TEXT DEFAULT 'UNKNOWN', "
+        "policy_score REAL DEFAULT 0, "
+        "minimum_required_score REAL DEFAULT 90, "
+        "hard_block INTEGER DEFAULT 0, "
+        "requires_approval INTEGER DEFAULT 0, "
+        "simulation_only INTEGER DEFAULT 1, "
+        "execution_eligible INTEGER DEFAULT 0, "
+        "target_denied INTEGER DEFAULT 0, "
+        "target_allowed INTEGER DEFAULT 0, "
+        "target_protected INTEGER DEFAULT 0, "
+        "user_intent_protected INTEGER DEFAULT 0, "
+        "model_gate_passed INTEGER DEFAULT 0, "
+        "decision_gate_passed INTEGER DEFAULT 0, "
+        "plan_gate_passed INTEGER DEFAULT 0, "
+        "verification_gate_passed INTEGER DEFAULT 0, "
+        "confidence_gate_passed INTEGER DEFAULT 0, "
+        "safe_mode_block INTEGER DEFAULT 1, "
+        "dry_run_block INTEGER DEFAULT 1, "
+        "auto_heal_disabled INTEGER DEFAULT 1, "
+        "decision_level TEXT DEFAULT 'NORMAL', "
+        "plan_status TEXT DEFAULT '', "
+        "verification_status TEXT DEFAULT '', "
+        "root_cause TEXT DEFAULT 'none');";
+
+    if (sqlite3_exec(db_, safetyPolicySql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
     const char* processIndexSql =
         "CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples(time);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_category_safety ON process_samples(category, safety);"
@@ -252,7 +290,8 @@ bool MetricsStorage::EnsureSchema() {
         "CREATE INDEX IF NOT EXISTS idx_user_intent_samples_state ON user_intent_samples(user_state, app_kind);"
         "CREATE INDEX IF NOT EXISTS idx_decision_audits_level ON decision_audits(level, root_cause, safety_gate);"
         "CREATE INDEX IF NOT EXISTS idx_heal_plans_status ON heal_plans(status, action_type, gate);"
-        "CREATE INDEX IF NOT EXISTS idx_heal_verifications_status ON heal_verifications(status, outcome_label, action_name);";
+        "CREATE INDEX IF NOT EXISTS idx_heal_verifications_status ON heal_verifications(status, outcome_label, action_name);"
+        "CREATE INDEX IF NOT EXISTS idx_safety_policy_level ON safety_policy_evaluations(level, reason_code, target_name);";
 
     if (sqlite3_exec(db_, processIndexSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -272,7 +311,8 @@ bool MetricsStorage::EnsureSchema() {
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(6, 'user_intent_samples', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(7, 'decision_audits', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(8, 'heal_plans', strftime('%s','now'));"
-        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(9, 'heal_verifications', strftime('%s','now'));";
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(9, 'heal_verifications', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(10, 'safety_policy_evaluations', strftime('%s','now'));";
 
     if (sqlite3_exec(db_, migrationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -529,6 +569,77 @@ bool MetricsStorage::LogHealVerification(
         const long long cutoff = snapshot.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
         sqlite3_stmt* retentionStmt = nullptr;
         if (sqlite3_prepare_v2(db_, "DELETE FROM heal_verifications WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        }
+    }
+
+    return ok;
+}
+
+bool MetricsStorage::LogSafetyPolicy(
+    const SystemSnapshot& snapshot,
+    const DecisionResult& decision,
+    const HealPlan& plan,
+    const HealVerification& verification,
+    const SafetyPolicyResult& policyResult
+) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO safety_policy_evaluations("
+        "time, level, reason_code, reason, target_pid, target_name, target_category, target_safety, "
+        "policy_score, minimum_required_score, hard_block, requires_approval, simulation_only, execution_eligible, "
+        "target_denied, target_allowed, target_protected, user_intent_protected, model_gate_passed, decision_gate_passed, "
+        "plan_gate_passed, verification_gate_passed, confidence_gate_passed, safe_mode_block, dry_run_block, "
+        "auto_heal_disabled, decision_level, plan_status, verification_status, root_cause"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(snapshot.timestamp));
+    sqlite3_bind_text(stmt, 2, policyResult.levelName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, policyResult.reasonCode.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, policyResult.reason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 5, static_cast<sqlite3_int64>(policyResult.targetPid));
+    sqlite3_bind_text(stmt, 6, policyResult.targetName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, policyResult.targetCategory.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, policyResult.targetSafety.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 9, policyResult.policyScore);
+    sqlite3_bind_double(stmt, 10, policyResult.minimumRequiredScore);
+    sqlite3_bind_int(stmt, 11, policyResult.hardBlock ? 1 : 0);
+    sqlite3_bind_int(stmt, 12, policyResult.requiresApproval ? 1 : 0);
+    sqlite3_bind_int(stmt, 13, policyResult.simulationOnly ? 1 : 0);
+    sqlite3_bind_int(stmt, 14, policyResult.executionEligible ? 1 : 0);
+    sqlite3_bind_int(stmt, 15, policyResult.targetDenied ? 1 : 0);
+    sqlite3_bind_int(stmt, 16, policyResult.targetAllowed ? 1 : 0);
+    sqlite3_bind_int(stmt, 17, policyResult.targetProtected ? 1 : 0);
+    sqlite3_bind_int(stmt, 18, policyResult.userIntentProtected ? 1 : 0);
+    sqlite3_bind_int(stmt, 19, policyResult.modelGatePassed ? 1 : 0);
+    sqlite3_bind_int(stmt, 20, policyResult.decisionGatePassed ? 1 : 0);
+    sqlite3_bind_int(stmt, 21, policyResult.planGatePassed ? 1 : 0);
+    sqlite3_bind_int(stmt, 22, policyResult.verificationGatePassed ? 1 : 0);
+    sqlite3_bind_int(stmt, 23, policyResult.confidenceGatePassed ? 1 : 0);
+    sqlite3_bind_int(stmt, 24, policyResult.safeModeBlock ? 1 : 0);
+    sqlite3_bind_int(stmt, 25, policyResult.dryRunBlock ? 1 : 0);
+    sqlite3_bind_int(stmt, 26, policyResult.autoHealDisabled ? 1 : 0);
+    sqlite3_bind_text(stmt, 27, DecisionEngine::ToString(decision.level), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 28, plan.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 29, verification.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 30, decision.rootCause.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+
+    if (ok) {
+        const long long cutoff = snapshot.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+        sqlite3_stmt* retentionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM safety_policy_evaluations WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
             ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
             sqlite3_finalize(retentionStmt);

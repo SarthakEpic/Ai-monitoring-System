@@ -15,6 +15,7 @@ add_executable(PredictiveAutoHeal
     HealingVerifier.cpp
     MetricsPipeline.cpp
     MetricsStorage.cpp
+    SafetyPolicy.cpp
     ProcessClassifier.cpp
     ProcessGenome.cpp
     ProcessTelemetry.cpp
@@ -40,12 +41,14 @@ add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
         "${CMAKE_SOURCE_DIR}/decision_audit_summary.py"
         "${CMAKE_SOURCE_DIR}/heal_plan_summary.py"
         "${CMAKE_SOURCE_DIR}/heal_verification_summary.py"
+        "${CMAKE_SOURCE_DIR}/safety_policy_summary.py"
         "${CMAKE_SOURCE_DIR}/training_label.txt"
         "${CMAKE_SOURCE_DIR}/PROCESS_GENOME.md"
         "${CMAKE_SOURCE_DIR}/USER_INTENT.md"
         "${CMAKE_SOURCE_DIR}/DECISION_ENGINE.md"
         "${CMAKE_SOURCE_DIR}/AUTO_HEAL_PLANNER.md"
         "${CMAKE_SOURCE_DIR}/HEALING_VERIFIER.md"
+        "${CMAKE_SOURCE_DIR}/SAFETY_POLICY.md"
         "${CMAKE_SOURCE_DIR}/DATA_COLLECTION.md"
         "${CMAKE_SOURCE_DIR}/requirements.txt"
         "$<TARGET_FILE_DIR:PredictiveAutoHeal>"
