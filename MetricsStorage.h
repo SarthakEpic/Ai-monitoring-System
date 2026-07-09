@@ -2,7 +2,9 @@
 
 #include <string>
 #include <vector>
+#include <mutex>
 
+#include "DecisionEngine.h"
 #include "SystemMetrics.h"
 
 struct sqlite3;
@@ -17,6 +19,13 @@ public:
     bool IsReady() const;
     void LogSnapshot(const SystemSnapshot& snapshot);
     void LogBatch(const std::vector<SystemSnapshot>& snapshots);
+    bool LogDecisionAudit(
+        const SystemSnapshot& snapshot,
+        const DecisionResult& decision,
+        double aiProbability,
+        double aiConfidence,
+        const std::string& aiSource
+    );
 
 private:
     bool EnsureSchema();
@@ -25,4 +34,5 @@ private:
     bool ExecuteInsertBatch(const std::vector<SystemSnapshot>& snapshots);
 
     sqlite3* db_ = nullptr;
+    mutable std::mutex dbMutex_;
 };

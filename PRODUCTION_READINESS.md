@@ -39,6 +39,7 @@ Before enabling real healing:
 - Keep `AUTO_HEAL_ENABLED=0` until model readiness is `production_candidate`.
 - Use Process Genome safety categories before any action.
 - Use User Intent protection before any action.
+- Use Stage 3 decision safety gates before any action.
 - Maintain process and service allowlists.
 - Maintain denylist for critical system processes.
 - Require high model confidence.
@@ -54,6 +55,7 @@ Before enabling real healing:
 - Persist prediction source, risk, confidence, class, reason, and action recommendation.
 - Persist process category, safety, waste score, and expected gain.
 - Persist user intent state, foreground app, app kind, fullscreen state, and focus duration.
+- Persist decision root cause, target, safety gate, cooldown, blocked reason, and dry-run status.
 - Track SQLite write failures.
 - Track Python service and future ONNX inference failures.
 - Display model readiness, feature count, and training timestamp.

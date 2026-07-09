@@ -29,6 +29,7 @@ MetricsStorage::~MetricsStorage() {
 bool MetricsStorage::Open(const string& path) {
     Close();
 
+    lock_guard<mutex> lock(dbMutex_);
     if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK) {
         db_ = nullptr;
         return false;
@@ -38,6 +39,7 @@ bool MetricsStorage::Open(const string& path) {
 }
 
 void MetricsStorage::Close() {
+    lock_guard<mutex> lock(dbMutex_);
     if (db_) {
         sqlite3_close(db_);
         db_ = nullptr;
@@ -45,6 +47,7 @@ void MetricsStorage::Close() {
 }
 
 bool MetricsStorage::IsReady() const {
+    lock_guard<mutex> lock(dbMutex_);
     return db_ != nullptr;
 }
 
@@ -130,11 +133,45 @@ bool MetricsStorage::EnsureSchema() {
         return false;
     }
 
+    const char* decisionAuditSql =
+        "CREATE TABLE IF NOT EXISTS decision_audits ("
+        "time INTEGER PRIMARY KEY, "
+        "level TEXT DEFAULT 'NORMAL', "
+        "risk_score REAL DEFAULT 0, "
+        "anomaly_score REAL DEFAULT 0, "
+        "pressure_score REAL DEFAULT 0, "
+        "ai_probability REAL DEFAULT 0, "
+        "ai_confidence REAL DEFAULT 0, "
+        "ai_source TEXT DEFAULT '', "
+        "root_cause TEXT DEFAULT 'none', "
+        "root_cause_detail TEXT DEFAULT '', "
+        "recommended_action TEXT DEFAULT 'monitor_only', "
+        "action_target_pid INTEGER DEFAULT 0, "
+        "action_target_name TEXT DEFAULT '', "
+        "safety_gate TEXT DEFAULT 'OBSERVE_ONLY', "
+        "blocked_reason TEXT DEFAULT '', "
+        "cooldown_remaining_sec INTEGER DEFAULT 0, "
+        "expected_gain_mb REAL DEFAULT 0, "
+        "action_confidence REAL DEFAULT 0, "
+        "candidate_safety_score REAL DEFAULT 0, "
+        "candidate_count INTEGER DEFAULT 0, "
+        "safe_to_heal INTEGER DEFAULT 0, "
+        "dry_run INTEGER DEFAULT 1, "
+        "user_state TEXT DEFAULT '', "
+        "foreground_process TEXT DEFAULT '', "
+        "top_process TEXT DEFAULT '');";
+
+    if (sqlite3_exec(db_, decisionAuditSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
     const char* processIndexSql =
         "CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples(time);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_category_safety ON process_samples(category, safety);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_waste ON process_samples(waste_score DESC);"
-        "CREATE INDEX IF NOT EXISTS idx_user_intent_samples_state ON user_intent_samples(user_state, app_kind);";
+        "CREATE INDEX IF NOT EXISTS idx_user_intent_samples_state ON user_intent_samples(user_state, app_kind);"
+        "CREATE INDEX IF NOT EXISTS idx_decision_audits_level ON decision_audits(level, root_cause, safety_gate);";
 
     if (sqlite3_exec(db_, processIndexSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -151,7 +188,8 @@ bool MetricsStorage::EnsureSchema() {
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(3, 'scenario_labels', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(4, 'process_genome_samples', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(5, 'process_sample_indexes_retention', strftime('%s','now'));"
-        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(6, 'user_intent_samples', strftime('%s','now'));";
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(6, 'user_intent_samples', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(7, 'decision_audits', strftime('%s','now'));";
 
     if (sqlite3_exec(db_, migrationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -207,8 +245,63 @@ void MetricsStorage::LogSnapshot(const SystemSnapshot& snapshot) {
 }
 
 void MetricsStorage::LogBatch(const vector<SystemSnapshot>& snapshots) {
+    lock_guard<mutex> lock(dbMutex_);
     if (!db_ || snapshots.empty()) return;
     ExecuteInsertBatch(snapshots);
+}
+
+bool MetricsStorage::LogDecisionAudit(
+    const SystemSnapshot& snapshot,
+    const DecisionResult& decision,
+    double aiProbability,
+    double aiConfidence,
+    const string& aiSource
+) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO decision_audits("
+        "time, level, risk_score, anomaly_score, pressure_score, ai_probability, ai_confidence, ai_source, "
+        "root_cause, root_cause_detail, recommended_action, action_target_pid, action_target_name, "
+        "safety_gate, blocked_reason, cooldown_remaining_sec, expected_gain_mb, action_confidence, "
+        "candidate_safety_score, candidate_count, safe_to_heal, dry_run, user_state, foreground_process, top_process"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(snapshot.timestamp));
+    sqlite3_bind_text(stmt, 2, DecisionEngine::ToString(decision.level), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 3, decision.riskScore);
+    sqlite3_bind_double(stmt, 4, decision.anomalyScore);
+    sqlite3_bind_double(stmt, 5, decision.pressureScore);
+    sqlite3_bind_double(stmt, 6, aiProbability);
+    sqlite3_bind_double(stmt, 7, aiConfidence);
+    sqlite3_bind_text(stmt, 8, aiSource.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, decision.rootCause.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, decision.rootCauseDetail.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 11, decision.recommendedAction.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 12, static_cast<sqlite3_int64>(decision.actionTargetPid));
+    sqlite3_bind_text(stmt, 13, decision.actionTarget.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 14, decision.safetyGate.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 15, decision.blockedReason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 16, decision.cooldownRemainingSeconds);
+    sqlite3_bind_double(stmt, 17, decision.expectedGainMB);
+    sqlite3_bind_double(stmt, 18, decision.actionConfidence);
+    sqlite3_bind_double(stmt, 19, decision.candidateSafetyScore);
+    sqlite3_bind_int(stmt, 20, decision.candidateCount);
+    sqlite3_bind_int(stmt, 21, decision.safeToHeal ? 1 : 0);
+    sqlite3_bind_int(stmt, 22, decision.dryRun ? 1 : 0);
+    sqlite3_bind_text(stmt, 23, snapshot.intent.userState.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 24, snapshot.intent.foregroundProcess.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 25, snapshot.topProcess.name.c_str(), -1, SQLITE_TRANSIENT);
+
+    const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
 }
 
 bool MetricsStorage::ExecuteInsertBatch(const vector<SystemSnapshot>& snapshots) {

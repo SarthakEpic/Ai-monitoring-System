@@ -10,9 +10,11 @@ The current version focuses on safe predictive monitoring: it detects resource p
 - CPU, memory, disk, network, process-count, and top-process monitoring
 - Process Genome Engine with per-process CPU, memory, I/O, lifetime, parent PID, foreground/window status, trust signals, category, safety, waste score, and expected gain
 - User Intent Engine that detects active/idle/away state, foreground app, app kind, fullscreen state, focus duration, and recent active apps
+- Safe Optimization Decision Engine with root-cause diagnosis, action targets, safety gates, cooldowns, dry-run recommendations, and blocked reasons
 - SQLite time-series telemetry storage
 - SQLite process intelligence history in `process_samples`
 - SQLite user intent history in `user_intent_samples`
+- SQLite decision audit history in `decision_audits`
 - Background batching pipeline for low-overhead writes
 - AI reliability contract with risk, confidence, class, reason, and recommended action
 - Persistent local inference service so the model loads once instead of spawning Python every prediction
@@ -49,7 +51,7 @@ Feature Engineering
 Persistent Python inference service
       |
       v
-Decision Engine
+Safe Optimization Decision Engine
       |
       v
 Dashboard + Alerts + Auto-heal readiness
@@ -64,6 +66,7 @@ Dashboard + Alerts + Auto-heal readiness
 | Dashboard | Working |
 | Process Genome Engine | Working phase 1 |
 | User Intent Engine | Working phase 2 |
+| Safe Optimization Decision Engine | Working phase 3 |
 | AI risk prediction | Working prototype |
 | Model confidence/reasons | Working prototype |
 | Persistent inference service | Working |
@@ -94,7 +97,7 @@ PredictiveAutoHeal/
 ├── ProcessClassifier.*       # Process category and safety classifier
 ├── ProcessGenome.*           # Waste/safety ranking engine
 ├── UserIntent.*              # Foreground app and active user intent collector
-├── DecisionEngine.*          # Risk scoring and recommendations
+├── DecisionEngine.*          # Risk scoring, root cause, safety gates, and dry-run recommendations
 ├── AppConfig.*               # Config file parsing
 ├── train_model.py            # Model training and reliability report
 ├── predict_model.py          # Runtime prediction CLI
@@ -105,9 +108,11 @@ PredictiveAutoHeal/
 ├── training_data_summary.py  # Data coverage checker
 ├── process_genome_summary.py # Process intelligence coverage checker
 ├── user_intent_summary.py    # User intent coverage checker
+├── decision_audit_summary.py # Decision/audit coverage checker
 ├── test_model_contract.py    # Runtime model contract tests
 ├── PROCESS_GENOME.md         # Process intelligence design notes
 ├── USER_INTENT.md            # User intent design notes
+├── DECISION_ENGINE.md        # Safe optimization decision design notes
 ├── DATA_COLLECTION.md        # Training data collection guide
 ├── TRANSFER.md               # Portable deployment guide
 └── requirements.txt
@@ -205,6 +210,12 @@ Inspect collected user intent:
 python user_intent_summary.py --db build\Debug\monitor.db
 ```
 
+Inspect Stage 3 decision audits:
+
+```powershell
+python decision_audit_summary.py --db build\Debug\monitor.db
+```
+
 See `DATA_COLLECTION.md` for safe collection guidance.
 
 ## Train The Model
@@ -252,6 +263,14 @@ runtime_events.jsonl
 
 Logged events include prediction cycles, alert triggers, model source, confidence, root cause, and recommended action.
 
+Stage 3 also records structured decision audits in SQLite:
+
+```text
+decision_audits
+```
+
+Each row includes level, risk, root cause, recommendation, action target, safety gate, blocked reason, expected gain, action confidence, dry-run state, and user intent context.
+
 The persistent inference service writes:
 
 ```text
@@ -277,6 +296,8 @@ Real healing should only be enabled after:
 - Dry-run mode
 - Rollback strategy
 - Operator-visible audit logs
+
+The current Stage 3 decision engine already produces dry-run recommendations and safety gates, but execution remains blocked by default.
 
 ## Portable Deployment
 

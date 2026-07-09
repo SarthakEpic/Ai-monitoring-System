@@ -87,6 +87,15 @@ double g_focusDurationSeconds = 0.0;
 bool g_foregroundFullscreen = false;
 string g_decisionSummary = "System stable";
 string g_decisionReason = "Collecting baseline";
+string g_decisionRootCauseDetail = "No dominant pressure source";
+string g_actionTarget = "system";
+string g_safetyGate = "OBSERVE_ONLY";
+string g_blockedReason = "Auto-heal execution disabled";
+double g_actionConfidence = 0.0;
+double g_expectedOptimizationGain = 0.0;
+int g_cooldownRemainingSeconds = 0;
+int g_candidateCount = 0;
+bool g_dryRun = true;
 RiskLevel g_decisionLevel = RiskLevel::Normal;
 bool g_safeToHeal = false;
 int g_modelFeatureCount = 0;
@@ -908,7 +917,10 @@ void DrawDecisionPanel(HDC hdc, const RECT& rc,
                        double riskScore,
                        double anomalyScore,
                        double pressureScore,
-                       const string& decisionSummary) {
+                       const string& decisionSummary,
+                       const string& rootCause,
+                       const string& rootCauseDetail,
+                       const string& safetyGate) {
     DrawSectionPanel(hdc, rc, "Decision Engine", LevelAccentColor(decisionLevel));
     RECT badge{ rc.left + 14, rc.top + 48, rc.right - 14, rc.top + 84 };
     DrawRoundedPanel(hdc, badge, LevelFillColor(decisionLevel), LevelAccentColor(decisionLevel), 14);
@@ -917,6 +929,15 @@ void DrawDecisionPanel(HDC hdc, const RECT& rc,
     DrawTextAt(hdc, rc.left + 112, rc.top + 108, "Anomaly " + to_string(static_cast<int>(anomalyScore)) + "%", RGB(170, 180, 195), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 134, "Pressure " + to_string(static_cast<int>(pressureScore)) + "%", RGB(170, 180, 195), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 160, ShortenText(decisionSummary, 38), RGB(180, 220, 255), gFontSmall);
+    if ((rc.bottom - rc.top) >= 178) {
+        DrawTextAt(hdc, rc.left + 14, rc.top + 186, "Cause " + ShortenText(ToUpperAscii(ToDisplayToken(rootCause)), 24), RGB(170, 180, 195), gFontSmall);
+    }
+    if ((rc.bottom - rc.top) >= 214) {
+        DrawTextAt(hdc, rc.left + 14, rc.top + 212, "Gate " + ShortenText(ToUpperAscii(ToDisplayToken(safetyGate)), 26), RGB(255, 210, 120), gFontSmall);
+    }
+    if ((rc.bottom - rc.top) >= 250) {
+        DrawTextAt(hdc, rc.left + 14, rc.top + 238, ShortenText(rootCauseDetail, 42), RGB(155, 165, 180), gFontSmall);
+    }
 }
 
 void DrawRuntimePanel(HDC hdc, const RECT& rc,
@@ -941,26 +962,35 @@ void DrawRuntimePanel(HDC hdc, const RECT& rc,
 void DrawAutoHealPanel(HDC hdc, const RECT& rc,
                        const string& recommendedAction,
                        bool safeToHeal,
-                       const SystemSnapshot& snapshot) {
+                       const SystemSnapshot& snapshot,
+                       const string& actionTarget,
+                       const string& safetyGate,
+                       const string& blockedReason,
+                       double actionConfidence,
+                       double expectedGainMB,
+                       int cooldownRemainingSeconds,
+                       int candidateCount,
+                       bool dryRun) {
     DrawSectionPanel(hdc, rc, "Auto-Heal Readiness", safeToHeal ? RGB(46, 204, 113) : RGB(241, 196, 15));
     RECT status{ rc.left + 14, rc.top + 48, rc.right - 14, rc.top + 88 };
     DrawRoundedPanel(hdc, status, safeToHeal ? RGB(25, 51, 44) : RGB(68, 50, 20), safeToHeal ? RGB(46, 204, 113) : RGB(241, 196, 15), 14);
     DrawTextAt(hdc, status.left + 14, status.top + 11, string("HEAL READY: ") + (safeToHeal ? "YES" : "NO"), RGB(255, 255, 255), gFontSection);
     DrawTextAt(hdc, rc.left + 14, rc.top + 112, "Action", RGB(160, 170, 185), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 138, ShortenText(ToUpperAscii(ToDisplayToken(recommendedAction)), 30), RGB(235, 240, 248), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 164, "Top process: " + ShortenText(snapshot.topProcess.name, 24), RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 14, rc.top + 164, "Target: " + ShortenText(actionTarget, 24), RGB(170, 180, 195), gFontSmall);
+    DrawTextAt(hdc, rc.left + 14, rc.top + 190, "Gate: " + ShortenText(ToUpperAscii(ToDisplayToken(safetyGate)), 24), RGB(255, 210, 120), gFontSmall);
+    DrawTextAt(hdc, rc.left + 14, rc.top + 216, "Mode: " + string(dryRun ? "DRY RUN" : "EXECUTION"), dryRun ? RGB(255, 210, 120) : RGB(120, 220, 160), gFontSmall);
     if ((rc.bottom - rc.top) >= 230) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 190, "Type: " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.category)), 18), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 150, rc.top + 190, "Safety: " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.safety)), 14), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 216, "Waste " + to_string(static_cast<int>(snapshot.topProcess.wasteScore)) + "  Gain " + to_string(static_cast<int>(snapshot.topProcess.expectedGainMB)) + " MB", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 242, ShortenText(snapshot.topProcess.reason, 44), RGB(180, 220, 255), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 242, "Confidence " + to_string(static_cast<int>(actionConfidence)) + "%  Gain " + to_string(static_cast<int>(expectedGainMB)) + " MB", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 268, "Candidates " + to_string(candidateCount) + "  Cooldown " + to_string(cooldownRemainingSeconds) + "s", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 294, ShortenText(blockedReason, 44), RGB(180, 220, 255), gFontSmall);
     }
-    if ((rc.bottom - rc.top) >= 310) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 284, "User Intent", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 316, "State " + snapshot.intent.userState + "  Kind " + snapshot.intent.appKind, RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 342, "Focus " + ShortenText(snapshot.intent.foregroundProcess, 30), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 368, "Idle " + to_string(static_cast<int>(snapshot.intent.idleSeconds)) + "s  Focus " + to_string(static_cast<int>(snapshot.intent.focusDurationSeconds)) + "s", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 394, ShortenText(snapshot.intent.reason, 44), RGB(180, 220, 255), gFontSmall);
+    if ((rc.bottom - rc.top) >= 390) {
+        DrawTextAt(hdc, rc.left + 14, rc.top + 336, "Protected User Intent", RGB(230, 235, 245), gFontSection);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 368, "State " + snapshot.intent.userState + "  Kind " + snapshot.intent.appKind, RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 394, "Focus " + ShortenText(snapshot.intent.foregroundProcess, 30), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 420, "Idle " + to_string(static_cast<int>(snapshot.intent.idleSeconds)) + "s  Focus " + to_string(static_cast<int>(snapshot.intent.focusDurationSeconds)) + "s", RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 446, ShortenText(snapshot.intent.reason, 44), RGB(180, 220, 255), gFontSmall);
     }
 }
 
@@ -1069,6 +1099,13 @@ void MonitorThread(HWND hwnd) {
     decisionThresholds.diskThreshold = diskTh;
     decisionThresholds.warningRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_WARNING_THRESHOLD", 55.0), 0.0, 100.0);
     decisionThresholds.criticalRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_CRITICAL_THRESHOLD", 75.0), decisionThresholds.warningRiskThreshold, 100.0);
+    DecisionPolicy decisionPolicy;
+    decisionPolicy.autoHealEnabled = g_config.GetInt("AUTO_HEAL_ENABLED", 0) != 0;
+    decisionPolicy.dryRun = g_config.GetInt("AUTO_HEAL_DRY_RUN", 1) != 0;
+    decisionPolicy.safeMode = g_config.GetInt("SAFE_MODE", 1) != 0;
+    decisionPolicy.cooldownSeconds = max(0, g_config.GetInt("AUTO_HEAL_COOLDOWN_SEC", 300));
+    decisionPolicy.allowlistCsv = g_config.GetString("AUTO_HEAL_ALLOWLIST", "");
+    decisionPolicy.denylistCsv = g_config.GetString("AUTO_HEAL_DENYLIST", "");
     const wstring runtimeFeaturesPath = (fs::path(GetExecutableDir()) / L"runtime_features.json").wstring();
     const bool preferInferenceService = UsePersistentInferenceService();
     const bool allowProcessFallback = g_config.GetInt("AI_SERVICE_FALLBACK_TO_PROCESS", 1) != 0;
@@ -1246,7 +1283,16 @@ void MonitorThread(HWND hwnd) {
         decisionContext.diskHistory = diskCopy;
         decisionContext.netHistory = netCopy;
         decisionContext.processHistory = processCopy;
-        decisionResult = g_decisionEngine.Evaluate(snapshot, currentAiProb, currentAiConfidence, currentSource, currentAiReason, decisionThresholds, decisionContext);
+        decisionResult = g_decisionEngine.Evaluate(
+            snapshot,
+            currentAiProb,
+            currentAiConfidence,
+            currentSource,
+            currentAiReason,
+            decisionThresholds,
+            decisionContext,
+            decisionPolicy
+        );
 
         {
             lock_guard<mutex> lock(g_dataMutex);
@@ -1256,7 +1302,17 @@ void MonitorThread(HWND hwnd) {
             g_decisionLevel = decisionResult.level;
             g_decisionSummary = decisionResult.summary;
             g_decisionReason = decisionResult.reason;
+            g_decisionRootCauseDetail = decisionResult.rootCauseDetail;
+            g_rootCause = decisionResult.rootCause;
             g_recommendedAction = decisionResult.recommendedAction;
+            g_actionTarget = decisionResult.actionTarget;
+            g_safetyGate = decisionResult.safetyGate;
+            g_blockedReason = decisionResult.blockedReason;
+            g_actionConfidence = decisionResult.actionConfidence;
+            g_expectedOptimizationGain = decisionResult.expectedGainMB;
+            g_cooldownRemainingSeconds = decisionResult.cooldownRemainingSeconds;
+            g_candidateCount = decisionResult.candidateCount;
+            g_dryRun = decisionResult.dryRun;
             g_safeToHeal = decisionResult.safeToHeal;
 
             if (decisionResult.level == RiskLevel::Critical) {
@@ -1286,6 +1342,21 @@ void MonitorThread(HWND hwnd) {
             g_alert = alertLocal;
         }
 
+        const bool decisionAuditOk = g_storage.LogDecisionAudit(
+            snapshot,
+            decisionResult,
+            currentAiProb,
+            currentAiConfidence,
+            currentSource
+        );
+        if (!decisionAuditOk && (g_tick % 30 == 0)) {
+            AppendRuntimeLog("decision_audit_write_failed", {
+                {"risk", to_string(static_cast<int>(decisionResult.riskScore))},
+                {"action", decisionResult.recommendedAction},
+                {"target", decisionResult.actionTarget},
+            });
+        }
+
         if (alertLocal && !lastAlert) {
             string msg =
                 "System Risk Detected!\n\n" +
@@ -1297,6 +1368,9 @@ void MonitorThread(HWND hwnd) {
                 string("Top Process: ") + ShortenText(snapshot.topProcess.name, 28) + "\n" +
                 string("Process Type: ") + snapshot.topProcess.category + "\n" +
                 string("Safety: ") + snapshot.topProcess.safety + "\n" +
+                string("Action: ") + decisionResult.recommendedAction + "\n" +
+                string("Gate: ") + decisionResult.safetyGate + "\n" +
+                string("Target: ") + decisionResult.actionTarget + "\n" +
                 string("Decision: ") + decisionResult.summary;
 
             ShowAlert(msg);
@@ -1310,6 +1384,13 @@ void MonitorThread(HWND hwnd) {
                 {"top_process_category", snapshot.topProcess.category},
                 {"top_process_safety", snapshot.topProcess.safety},
                 {"top_process_waste", to_string(static_cast<int>(snapshot.topProcess.wasteScore))},
+                {"root_cause", decisionResult.rootCause},
+                {"root_cause_detail", decisionResult.rootCauseDetail},
+                {"action", decisionResult.recommendedAction},
+                {"target", decisionResult.actionTarget},
+                {"safety_gate", decisionResult.safetyGate},
+                {"blocked_reason", decisionResult.blockedReason},
+                {"dry_run", decisionResult.dryRun ? "1" : "0"},
                 {"user_state", snapshot.intent.userState},
                 {"foreground_process", snapshot.intent.foregroundProcess},
                 {"app_kind", snapshot.intent.appKind},
@@ -1322,6 +1403,16 @@ void MonitorThread(HWND hwnd) {
                 {"class", currentAiClass},
                 {"root_cause", currentRootCause},
                 {"action", currentRecommendedAction},
+                {"decision_root_cause", decisionResult.rootCause},
+                {"root_cause_detail", decisionResult.rootCauseDetail},
+                {"decision_action", decisionResult.recommendedAction},
+                {"target", decisionResult.actionTarget},
+                {"safety_gate", decisionResult.safetyGate},
+                {"blocked_reason", decisionResult.blockedReason},
+                {"dry_run", decisionResult.dryRun ? "1" : "0"},
+                {"cooldown_remaining", to_string(decisionResult.cooldownRemainingSeconds)},
+                {"action_confidence", to_string(static_cast<int>(decisionResult.actionConfidence))},
+                {"candidate_count", to_string(decisionResult.candidateCount)},
                 {"model_readiness", g_modelReadiness},
                 {"risk", to_string(static_cast<int>(decisionResult.riskScore))},
                 {"ai_probability", to_string(static_cast<int>(currentAiProb))},
@@ -1378,13 +1469,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         string modelReadiness;
         string modelGeneratedAt;
         string recommendedAction;
+        string actionTarget;
+        string safetyGate;
+        string blockedReason;
+        string decisionRootCauseDetail;
         string decisionSummary;
         bool safeToHeal = false;
+        bool dryRun = true;
         int modelFeatureCount = 0;
+        int cooldownRemainingSeconds = 0;
+        int candidateCount = 0;
         RiskLevel decisionLevel = RiskLevel::Normal;
         double riskScore = 0.0;
         double anomalyScore = 0.0;
         double pressureScore = 0.0;
+        double actionConfidence = 0.0;
+        double expectedOptimizationGain = 0.0;
         deque<double> cpuHist, memHist, diskHist;
         int cpuTh = g_config.GetInt("CPU_THRESHOLD", 80);
         int memTh = g_config.GetInt("MEM_THRESHOLD", 85);
@@ -1439,7 +1539,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             modelGeneratedAt = g_modelGeneratedAt;
             modelFeatureCount = g_modelFeatureCount;
             recommendedAction = g_recommendedAction;
+            actionTarget = g_actionTarget;
+            safetyGate = g_safetyGate;
+            blockedReason = g_blockedReason;
+            decisionRootCauseDetail = g_decisionRootCauseDetail;
             safeToHeal = g_safeToHeal;
+            dryRun = g_dryRun;
+            cooldownRemainingSeconds = g_cooldownRemainingSeconds;
+            candidateCount = g_candidateCount;
+            actionConfidence = g_actionConfidence;
+            expectedOptimizationGain = g_expectedOptimizationGain;
             decisionSummary = g_decisionSummary;
             decisionLevel = g_decisionLevel;
             cpuHist = g_cpuHist;
@@ -1517,7 +1626,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawMetricCard(memDC, mainX + (cardW + gap) * 4, rowY, cardW, cardH, "RISK SCORE", to_string(static_cast<int>(riskScore)) + "%", string(DecisionEngine::ToString(decisionLevel)), riskScore, LevelAccentColor(decisionLevel), criticalAlertActive);
 
         int middleTop = rowY + cardH + 14;
-        int bottomH = 188;
+        int bottomH = 236;
         int bottomTop = max(middleTop + 260, static_cast<int>(client.bottom) - bottomH - pad);
         int middleH = max(260, bottomTop - middleTop - 14);
         int reliabilityW = min(390, max(330, mainW / 4));
@@ -1536,18 +1645,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (g_dashboardView == DashboardView::Overview) {
             DrawGraph(memDC, graphRc, cpuHist, memHist, diskHist);
             DrawReliabilityPanel(memDC, reliabilityRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
-            DrawDecisionPanel(memDC, decisionRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary);
+            DrawDecisionPanel(memDC, decisionRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
             DrawRuntimePanel(memDC, runtimeRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady);
-            DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot);
+            DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun);
             DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
         } else if (g_dashboardView == DashboardView::Reliability) {
             RECT bigReliability{ mainX, middleTop, mainX + reliabilityW + 120, middleTop + middleH };
             RECT decisionWide{ bigReliability.right + gap, middleTop, client.right - pad, middleTop + middleH };
             DrawReliabilityPanel(memDC, bigReliability, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
-            DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary);
+            DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
             DrawPlaceholderWidePanel(memDC, decisionRc, "Model Contract", "Contract ai_reliability_v2", "50 features: resources, trends, spikes, recovery");
             DrawThresholdPanel(memDC, runtimeRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
-            DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot);
+            DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun);
             DrawRuntimePanel(memDC, thresholdRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady);
         } else if (g_dashboardView == DashboardView::Runtime) {
             RECT runtimeWide{ mainX, middleTop, mainX + (mainW / 2) - gap, middleTop + middleH };
@@ -1556,13 +1665,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DrawThresholdPanel(memDC, thresholdWide, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
             DrawGraph(memDC, decisionRc, cpuHist, memHist, diskHist);
             DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
-            DrawDecisionPanel(memDC, healRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary);
-            DrawAutoHealPanel(memDC, thresholdRc, recommendedAction, safeToHeal, snapshot);
+            DrawDecisionPanel(memDC, healRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
+            DrawAutoHealPanel(memDC, thresholdRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun);
         } else {
             RECT healWide{ mainX, middleTop, mainX + (mainW / 2) - gap, middleTop + middleH };
             RECT decisionWide{ healWide.right + gap, middleTop, client.right - pad, middleTop + middleH };
-            DrawAutoHealPanel(memDC, healWide, recommendedAction, safeToHeal, snapshot);
-            DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary);
+            DrawAutoHealPanel(memDC, healWide, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun);
+            DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
             DrawPlaceholderWidePanel(memDC, decisionRc, "Safety Policy", "Auto-heal execution is disabled", "Future healing needs allowlist, cooldown, confidence, and rollback checks");
             DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
             DrawRuntimePanel(memDC, healRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady);
