@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Debug",
-    [string]$OutputDir = "release"
+    [string]$OutputDir = "release",
+    [int]$BuildParallelism = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +19,7 @@ function Invoke-NativeChecked {
 }
 
 Invoke-NativeChecked -Name "CMake configure" -Command { cmake -S . -B build }
-Invoke-NativeChecked -Name "CMake build" -Command { cmake --build build --config $Configuration }
+Invoke-NativeChecked -Name "CMake build" -Command { cmake --build build --config $Configuration -- /m:$BuildParallelism }
 
 $target = Join-Path $OutputDir "PredictiveAutoHeal"
 if (Test-Path $target) {
@@ -39,11 +40,13 @@ $runtimeFiles = @(
     "user_intent_summary.py",
     "decision_audit_summary.py",
     "heal_plan_summary.py",
+    "heal_verification_summary.py",
     "training_label.txt",
     "PROCESS_GENOME.md",
     "USER_INTENT.md",
     "DECISION_ENGINE.md",
     "AUTO_HEAL_PLANNER.md",
+    "HEALING_VERIFIER.md",
     "DATA_COLLECTION.md",
     "PRODUCTION_READINESS.md",
     "README.md",

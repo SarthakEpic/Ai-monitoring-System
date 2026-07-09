@@ -6,6 +6,7 @@
 
 #include "AutoHealPlanner.h"
 #include "DecisionEngine.h"
+#include "HealingVerifier.h"
 #include "SystemMetrics.h"
 
 struct sqlite3;
@@ -31,6 +32,12 @@ public:
         const SystemSnapshot& snapshot,
         const DecisionResult& decision,
         const HealPlan& plan
+    );
+    bool LogHealVerification(
+        const SystemSnapshot& snapshot,
+        const DecisionResult& decision,
+        const HealPlan& plan,
+        const HealVerification& verification
     );
 
 private:

@@ -204,13 +204,55 @@ bool MetricsStorage::EnsureSchema() {
         return false;
     }
 
+    const char* healVerificationsSql =
+        "CREATE TABLE IF NOT EXISTS heal_verifications ("
+        "time INTEGER PRIMARY KEY, "
+        "verification_id TEXT DEFAULT '', "
+        "plan_id TEXT DEFAULT '', "
+        "status TEXT DEFAULT 'NOT_NEEDED', "
+        "mode TEXT DEFAULT 'SIMULATION_ONLY', "
+        "outcome_label TEXT DEFAULT 'NO_ACTION', "
+        "summary TEXT DEFAULT '', "
+        "reason TEXT DEFAULT '', "
+        "success_criteria TEXT DEFAULT '', "
+        "failure_criteria TEXT DEFAULT '', "
+        "evidence TEXT DEFAULT '', "
+        "observation_window_sec INTEGER DEFAULT 60, "
+        "confidence REAL DEFAULT 0, "
+        "risk_before REAL DEFAULT 0, "
+        "risk_after_estimate REAL DEFAULT 0, "
+        "risk_delta_estimate REAL DEFAULT 0, "
+        "cpu_before REAL DEFAULT 0, "
+        "cpu_after_estimate REAL DEFAULT 0, "
+        "memory_before REAL DEFAULT 0, "
+        "memory_after_estimate REAL DEFAULT 0, "
+        "disk_before REAL DEFAULT 0, "
+        "disk_after_estimate REAL DEFAULT 0, "
+        "network_before_kbps REAL DEFAULT 0, "
+        "network_after_estimate_kbps REAL DEFAULT 0, "
+        "expected_gain_mb REAL DEFAULT 0, "
+        "simulated_pass INTEGER DEFAULT 0, "
+        "simulated_weak INTEGER DEFAULT 0, "
+        "simulated_fail INTEGER DEFAULT 0, "
+        "blocked INTEGER DEFAULT 0, "
+        "plan_status TEXT DEFAULT '', "
+        "action_name TEXT DEFAULT '', "
+        "target_name TEXT DEFAULT '', "
+        "root_cause TEXT DEFAULT 'none');";
+
+    if (sqlite3_exec(db_, healVerificationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
     const char* processIndexSql =
         "CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples(time);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_category_safety ON process_samples(category, safety);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_waste ON process_samples(waste_score DESC);"
         "CREATE INDEX IF NOT EXISTS idx_user_intent_samples_state ON user_intent_samples(user_state, app_kind);"
         "CREATE INDEX IF NOT EXISTS idx_decision_audits_level ON decision_audits(level, root_cause, safety_gate);"
-        "CREATE INDEX IF NOT EXISTS idx_heal_plans_status ON heal_plans(status, action_type, gate);";
+        "CREATE INDEX IF NOT EXISTS idx_heal_plans_status ON heal_plans(status, action_type, gate);"
+        "CREATE INDEX IF NOT EXISTS idx_heal_verifications_status ON heal_verifications(status, outcome_label, action_name);";
 
     if (sqlite3_exec(db_, processIndexSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -229,7 +271,8 @@ bool MetricsStorage::EnsureSchema() {
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(5, 'process_sample_indexes_retention', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(6, 'user_intent_samples', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(7, 'decision_audits', strftime('%s','now'));"
-        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(8, 'heal_plans', strftime('%s','now'));";
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(8, 'heal_plans', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(9, 'heal_verifications', strftime('%s','now'));";
 
     if (sqlite3_exec(db_, migrationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -419,6 +462,79 @@ bool MetricsStorage::LogHealPlan(
 
     const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);
+    return ok;
+}
+
+bool MetricsStorage::LogHealVerification(
+    const SystemSnapshot& snapshot,
+    const DecisionResult& decision,
+    const HealPlan& plan,
+    const HealVerification& verification
+) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO heal_verifications("
+        "time, verification_id, plan_id, status, mode, outcome_label, summary, reason, success_criteria, "
+        "failure_criteria, evidence, observation_window_sec, confidence, risk_before, risk_after_estimate, "
+        "risk_delta_estimate, cpu_before, cpu_after_estimate, memory_before, memory_after_estimate, "
+        "disk_before, disk_after_estimate, network_before_kbps, network_after_estimate_kbps, expected_gain_mb, "
+        "simulated_pass, simulated_weak, simulated_fail, blocked, plan_status, action_name, target_name, root_cause"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(snapshot.timestamp));
+    sqlite3_bind_text(stmt, 2, verification.verificationId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, plan.planId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, verification.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, verification.mode.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, verification.outcomeLabel.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, verification.summary.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, verification.reason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, verification.successCriteria.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, verification.failureCriteria.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 11, verification.evidence.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 12, verification.observationWindowSeconds);
+    sqlite3_bind_double(stmt, 13, verification.confidence);
+    sqlite3_bind_double(stmt, 14, verification.riskBefore);
+    sqlite3_bind_double(stmt, 15, verification.riskAfterEstimate);
+    sqlite3_bind_double(stmt, 16, verification.riskDeltaEstimate);
+    sqlite3_bind_double(stmt, 17, verification.cpuBefore);
+    sqlite3_bind_double(stmt, 18, verification.cpuAfterEstimate);
+    sqlite3_bind_double(stmt, 19, verification.memoryBefore);
+    sqlite3_bind_double(stmt, 20, verification.memoryAfterEstimate);
+    sqlite3_bind_double(stmt, 21, verification.diskBefore);
+    sqlite3_bind_double(stmt, 22, verification.diskAfterEstimate);
+    sqlite3_bind_double(stmt, 23, verification.networkBeforeKBps);
+    sqlite3_bind_double(stmt, 24, verification.networkAfterEstimateKBps);
+    sqlite3_bind_double(stmt, 25, verification.expectedGainMB);
+    sqlite3_bind_int(stmt, 26, verification.simulatedPass ? 1 : 0);
+    sqlite3_bind_int(stmt, 27, verification.simulatedWeak ? 1 : 0);
+    sqlite3_bind_int(stmt, 28, verification.simulatedFail ? 1 : 0);
+    sqlite3_bind_int(stmt, 29, verification.blocked ? 1 : 0);
+    sqlite3_bind_text(stmt, 30, plan.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 31, plan.actionName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 32, plan.targetName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 33, decision.rootCause.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+
+    if (ok) {
+        const long long cutoff = snapshot.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+        sqlite3_stmt* retentionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM heal_verifications WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        }
+    }
+
     return ok;
 }
 
