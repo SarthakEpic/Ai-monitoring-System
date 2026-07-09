@@ -166,12 +166,51 @@ bool MetricsStorage::EnsureSchema() {
         return false;
     }
 
+    const char* healPlansSql =
+        "CREATE TABLE IF NOT EXISTS heal_plans ("
+        "time INTEGER PRIMARY KEY, "
+        "plan_id TEXT DEFAULT '', "
+        "status TEXT DEFAULT 'OBSERVE', "
+        "execution_mode TEXT DEFAULT 'SIMULATION_ONLY', "
+        "action_type TEXT DEFAULT 'none', "
+        "action_name TEXT DEFAULT 'monitor_only', "
+        "target_kind TEXT DEFAULT 'system', "
+        "target_pid INTEGER DEFAULT 0, "
+        "target_name TEXT DEFAULT '', "
+        "gate TEXT DEFAULT 'OBSERVE_ONLY', "
+        "blocked_reason TEXT DEFAULT '', "
+        "summary TEXT DEFAULT '', "
+        "rationale TEXT DEFAULT '', "
+        "pre_check TEXT DEFAULT '', "
+        "execution_step TEXT DEFAULT '', "
+        "post_check TEXT DEFAULT '', "
+        "rollback_plan TEXT DEFAULT '', "
+        "safety_notes TEXT DEFAULT '', "
+        "expected_impact TEXT DEFAULT '', "
+        "readiness_score REAL DEFAULT 0, "
+        "confidence REAL DEFAULT 0, "
+        "expected_gain_mb REAL DEFAULT 0, "
+        "risk_before REAL DEFAULT 0, "
+        "would_execute INTEGER DEFAULT 0, "
+        "requires_user_approval INTEGER DEFAULT 0, "
+        "blocked INTEGER DEFAULT 1, "
+        "decision_level TEXT DEFAULT 'NORMAL', "
+        "root_cause TEXT DEFAULT 'none', "
+        "user_state TEXT DEFAULT '', "
+        "foreground_process TEXT DEFAULT '');";
+
+    if (sqlite3_exec(db_, healPlansSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
     const char* processIndexSql =
         "CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples(time);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_category_safety ON process_samples(category, safety);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_waste ON process_samples(waste_score DESC);"
         "CREATE INDEX IF NOT EXISTS idx_user_intent_samples_state ON user_intent_samples(user_state, app_kind);"
-        "CREATE INDEX IF NOT EXISTS idx_decision_audits_level ON decision_audits(level, root_cause, safety_gate);";
+        "CREATE INDEX IF NOT EXISTS idx_decision_audits_level ON decision_audits(level, root_cause, safety_gate);"
+        "CREATE INDEX IF NOT EXISTS idx_heal_plans_status ON heal_plans(status, action_type, gate);";
 
     if (sqlite3_exec(db_, processIndexSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -189,7 +228,8 @@ bool MetricsStorage::EnsureSchema() {
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(4, 'process_genome_samples', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(5, 'process_sample_indexes_retention', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(6, 'user_intent_samples', strftime('%s','now'));"
-        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(7, 'decision_audits', strftime('%s','now'));";
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(7, 'decision_audits', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(8, 'heal_plans', strftime('%s','now'));";
 
     if (sqlite3_exec(db_, migrationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -298,6 +338,84 @@ bool MetricsStorage::LogDecisionAudit(
     sqlite3_bind_text(stmt, 23, snapshot.intent.userState.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 24, snapshot.intent.foregroundProcess.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 25, snapshot.topProcess.name.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+
+    if (ok) {
+        const long long cutoff = snapshot.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+        sqlite3_stmt* retentionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM heal_plans WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        }
+    }
+
+    if (ok) {
+        const long long cutoff = snapshot.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+        sqlite3_stmt* retentionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM decision_audits WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        }
+    }
+
+    return ok;
+}
+
+bool MetricsStorage::LogHealPlan(
+    const SystemSnapshot& snapshot,
+    const DecisionResult& decision,
+    const HealPlan& plan
+) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO heal_plans("
+        "time, plan_id, status, execution_mode, action_type, action_name, target_kind, target_pid, target_name, "
+        "gate, blocked_reason, summary, rationale, pre_check, execution_step, post_check, rollback_plan, safety_notes, "
+        "expected_impact, readiness_score, confidence, expected_gain_mb, risk_before, would_execute, "
+        "requires_user_approval, blocked, decision_level, root_cause, user_state, foreground_process"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(snapshot.timestamp));
+    sqlite3_bind_text(stmt, 2, plan.planId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, plan.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, plan.executionMode.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, plan.actionType.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, plan.actionName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, plan.targetKind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 8, static_cast<sqlite3_int64>(plan.targetPid));
+    sqlite3_bind_text(stmt, 9, plan.targetName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, plan.gate.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 11, plan.blockedReason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 12, plan.summary.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, plan.rationale.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 14, plan.preCheck.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 15, plan.executionStep.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 16, plan.postCheck.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 17, plan.rollbackPlan.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 18, plan.safetyNotes.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 19, plan.expectedImpact.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 20, plan.readinessScore);
+    sqlite3_bind_double(stmt, 21, plan.confidence);
+    sqlite3_bind_double(stmt, 22, plan.expectedGainMB);
+    sqlite3_bind_double(stmt, 23, plan.riskBefore);
+    sqlite3_bind_int(stmt, 24, plan.wouldExecute ? 1 : 0);
+    sqlite3_bind_int(stmt, 25, plan.requiresUserApproval ? 1 : 0);
+    sqlite3_bind_int(stmt, 26, plan.blocked ? 1 : 0);
+    sqlite3_bind_text(stmt, 27, DecisionEngine::ToString(decision.level), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 28, decision.rootCause.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 29, snapshot.intent.userState.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 30, snapshot.intent.foregroundProcess.c_str(), -1, SQLITE_TRANSIENT);
 
     const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);

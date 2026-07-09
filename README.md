@@ -11,10 +11,12 @@ The current version focuses on safe predictive monitoring: it detects resource p
 - Process Genome Engine with per-process CPU, memory, I/O, lifetime, parent PID, foreground/window status, trust signals, category, safety, waste score, and expected gain
 - User Intent Engine that detects active/idle/away state, foreground app, app kind, fullscreen state, focus duration, and recent active apps
 - Safe Optimization Decision Engine with root-cause diagnosis, action targets, safety gates, cooldowns, dry-run recommendations, and blocked reasons
+- Auto-Heal Dry-Run Planner with pre-checks, simulated execution steps, post-checks, rollback notes, readiness score, and audit trail
 - SQLite time-series telemetry storage
 - SQLite process intelligence history in `process_samples`
 - SQLite user intent history in `user_intent_samples`
 - SQLite decision audit history in `decision_audits`
+- SQLite auto-heal plan history in `heal_plans`
 - Background batching pipeline for low-overhead writes
 - AI reliability contract with risk, confidence, class, reason, and recommended action
 - Persistent local inference service so the model loads once instead of spawning Python every prediction
@@ -54,6 +56,9 @@ Persistent Python inference service
 Safe Optimization Decision Engine
       |
       v
+Auto-Heal Dry-Run Planner
+      |
+      v
 Dashboard + Alerts + Auto-heal readiness
 ```
 
@@ -67,6 +72,7 @@ Dashboard + Alerts + Auto-heal readiness
 | Process Genome Engine | Working phase 1 |
 | User Intent Engine | Working phase 2 |
 | Safe Optimization Decision Engine | Working phase 3 |
+| Auto-Heal Dry-Run Planner | Working phase 4 |
 | AI risk prediction | Working prototype |
 | Model confidence/reasons | Working prototype |
 | Persistent inference service | Working |
@@ -98,6 +104,7 @@ PredictiveAutoHeal/
 ├── ProcessGenome.*           # Waste/safety ranking engine
 ├── UserIntent.*              # Foreground app and active user intent collector
 ├── DecisionEngine.*          # Risk scoring, root cause, safety gates, and dry-run recommendations
+├── AutoHealPlanner.*         # Dry-run healing plan generation and safety playbooks
 ├── AppConfig.*               # Config file parsing
 ├── train_model.py            # Model training and reliability report
 ├── predict_model.py          # Runtime prediction CLI
@@ -109,10 +116,12 @@ PredictiveAutoHeal/
 ├── process_genome_summary.py # Process intelligence coverage checker
 ├── user_intent_summary.py    # User intent coverage checker
 ├── decision_audit_summary.py # Decision/audit coverage checker
+├── heal_plan_summary.py      # Auto-heal plan coverage checker
 ├── test_model_contract.py    # Runtime model contract tests
 ├── PROCESS_GENOME.md         # Process intelligence design notes
 ├── USER_INTENT.md            # User intent design notes
 ├── DECISION_ENGINE.md        # Safe optimization decision design notes
+├── AUTO_HEAL_PLANNER.md      # Dry-run healing planner design notes
 ├── DATA_COLLECTION.md        # Training data collection guide
 ├── TRANSFER.md               # Portable deployment guide
 └── requirements.txt
@@ -216,6 +225,12 @@ Inspect Stage 3 decision audits:
 python decision_audit_summary.py --db build\Debug\monitor.db
 ```
 
+Inspect Stage 4 dry-run healing plans:
+
+```powershell
+python heal_plan_summary.py --db build\Debug\monitor.db
+```
+
 See `DATA_COLLECTION.md` for safe collection guidance.
 
 ## Train The Model
@@ -271,6 +286,14 @@ decision_audits
 
 Each row includes level, risk, root cause, recommendation, action target, safety gate, blocked reason, expected gain, action confidence, dry-run state, and user intent context.
 
+Stage 4 records dry-run healing plans in SQLite:
+
+```text
+heal_plans
+```
+
+Each plan includes status, execution mode, action type, target, readiness score, expected gain, pre-check, simulated execution step, post-check, rollback note, and safety notes.
+
 The persistent inference service writes:
 
 ```text
@@ -297,7 +320,7 @@ Real healing should only be enabled after:
 - Rollback strategy
 - Operator-visible audit logs
 
-The current Stage 3 decision engine already produces dry-run recommendations and safety gates, but execution remains blocked by default.
+The current Stage 3 decision engine and Stage 4 planner already produce dry-run recommendations, safety gates, and healing playbooks, but execution remains blocked by default.
 
 ## Portable Deployment
 
@@ -324,7 +347,7 @@ requirements.txt
 - Add migration tests for old database files
 - Add Windows service mode
 - Add signed release packaging
-- Add safe auto-healing execution after model readiness gates pass
+- Add safe auto-healing execution after model readiness and planner-readiness gates pass
 - Add Linux collector after Windows stabilizes
 
 ## Portfolio Notes

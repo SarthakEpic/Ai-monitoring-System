@@ -46,6 +46,8 @@ Before enabling real healing:
 - Require repeated critical state before action.
 - Add cooldowns per process/service.
 - Add audit logging for every recommendation and action.
+- Require a Stage 4 dry-run plan before any action.
+- Require pre-check, post-check, and rollback notes for every future action.
 - Add manual override / disable switch.
 - Verify the system improved after action.
 
@@ -56,6 +58,7 @@ Before enabling real healing:
 - Persist process category, safety, waste score, and expected gain.
 - Persist user intent state, foreground app, app kind, fullscreen state, and focus duration.
 - Persist decision root cause, target, safety gate, cooldown, blocked reason, and dry-run status.
+- Persist auto-heal plan status, readiness, target, expected impact, pre-check, post-check, and rollback note.
 - Track SQLite write failures.
 - Track Python service and future ONNX inference failures.
 - Display model readiness, feature count, and training timestamp.
@@ -80,6 +83,6 @@ Before enabling real healing:
 
 ## Current Honest Status
 
-PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates.
+PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates and dry-run healing plans.
 
 It is not yet production-ready for autonomous healing. The next production milestone is improving CRITICAL and RECOVERY reliability using scenario-labeled data.

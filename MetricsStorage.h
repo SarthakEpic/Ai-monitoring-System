@@ -4,6 +4,7 @@
 #include <vector>
 #include <mutex>
 
+#include "AutoHealPlanner.h"
 #include "DecisionEngine.h"
 #include "SystemMetrics.h"
 
@@ -25,6 +26,11 @@ public:
         double aiProbability,
         double aiConfidence,
         const std::string& aiSource
+    );
+    bool LogHealPlan(
+        const SystemSnapshot& snapshot,
+        const DecisionResult& decision,
+        const HealPlan& plan
     );
 
 private:
