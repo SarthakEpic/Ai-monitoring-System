@@ -51,7 +51,7 @@ SystemSnapshot WindowsMetricsCollector::Collect() {
         hasPreviousCpuTimes_ = true;
     }
 
-    snapshot.memoryUsage = ReadMemoryUsage();
+    ReadMemoryDetails(snapshot);
     snapshot.diskFree = ReadDiskFreePercent(L"C:\\");
     ReadNetworkRates(snapshot.netDownKBps, snapshot.netUpKBps);
     snapshot.intent = userIntent_.Capture();
@@ -95,6 +95,21 @@ double WindowsMetricsCollector::ReadMemoryUsage() const {
     mem.dwLength = sizeof(mem);
     if (!GlobalMemoryStatusEx(&mem)) return 0.0;
     return ClampPercent(static_cast<double>(mem.dwMemoryLoad));
+}
+
+void WindowsMetricsCollector::ReadMemoryDetails(SystemSnapshot& snapshot) const {
+    MEMORYSTATUSEX mem{};
+    mem.dwLength = sizeof(mem);
+    if (!GlobalMemoryStatusEx(&mem)) {
+        snapshot.memoryUsage = 0.0;
+        snapshot.totalMemoryMB = 0.0;
+        snapshot.availableMemoryMB = 0.0;
+        return;
+    }
+
+    snapshot.memoryUsage = ClampPercent(static_cast<double>(mem.dwMemoryLoad));
+    snapshot.totalMemoryMB = static_cast<double>(mem.ullTotalPhys) / 1024.0 / 1024.0;
+    snapshot.availableMemoryMB = static_cast<double>(mem.ullAvailPhys) / 1024.0 / 1024.0;
 }
 
 double WindowsMetricsCollector::ReadDiskFreePercent(const wchar_t* path) const {

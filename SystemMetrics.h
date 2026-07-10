@@ -41,6 +41,8 @@ struct SystemSnapshot {
     long long timestamp = 0;
     double cpuUsage = 0.0;
     double memoryUsage = 0.0;
+    double totalMemoryMB = 0.0;
+    double availableMemoryMB = 0.0;
     double diskFree = 0.0;
     double netDownKBps = 0.0;
     double netUpKBps = 0.0;
@@ -69,6 +71,7 @@ private:
     static double ClampPercent(double value);
     bool ReadCpuTimes(CpuTimes& times) const;
     double ReadMemoryUsage() const;
+    void ReadMemoryDetails(SystemSnapshot& snapshot) const;
     double ReadDiskFreePercent(const wchar_t* path) const;
     void ReadNetworkRates(double& downKBps, double& upKBps);
     void ReadProcessGenome(SystemSnapshot& snapshot);

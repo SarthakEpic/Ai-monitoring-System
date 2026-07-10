@@ -6,8 +6,11 @@
 
 #include "AdaptiveBaseline.h"
 #include "AutoHealPlanner.h"
+#include "BackgroundAgent.h"
+#include "BenchmarkProof.h"
 #include "DecisionEngine.h"
 #include "HealingVerifier.h"
+#include "LowEndAutopilot.h"
 #include "RuntimeHealth.h"
 #include "SafetyPolicy.h"
 #include "SystemMetrics.h"
@@ -51,6 +54,9 @@ public:
     );
     bool LogRuntimeHealth(const RuntimeHealthSample& sample);
     bool LogAdaptiveBaseline(const AdaptiveBaselineResult& baseline);
+    bool LogLowEndAutopilot(const LowEndAutopilotResult& autopilot);
+    bool LogBackgroundAgent(const BackgroundAgentResult& agent);
+    bool LogBenchmarkProof(const BenchmarkProofResult& proof);
 
 private:
     bool EnsureSchema();

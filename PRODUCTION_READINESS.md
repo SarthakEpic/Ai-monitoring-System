@@ -66,6 +66,9 @@ Before enabling real healing:
 - Persist safety policy level, reason code, policy score, target guardrails, and execution eligibility.
 - Persist runtime health status, prediction path, model success rate, fallback rate, SQLite success rate, and prediction latency.
 - Persist adaptive baseline status, dominant drift metric, learned means, anomaly score, confidence, and risk adjustment.
+- Persist low-end autopilot pressure, foreground protection, reversible recommendations, and estimated resource recovery.
+- Persist background-agent, tray, startup-registration, and Quick Restore state.
+- Persist proof-mode before values, after estimates, confidence, action count, and user-app impact.
 - Track SQLite write failures through Stage 7 runtime health samples.
 - Track Python service, one-shot fallback, cache usage, and future ONNX inference failures.
 - Display model readiness, feature count, training timestamp, runtime health, and adaptive baseline status.
@@ -78,6 +81,9 @@ Before enabling real healing:
 - Add CI or documented local check for C++ build.
 - Package a release folder or installer.
 - Document target Windows versions.
+- Keep tray-agent mode distinct from a true Windows service.
+- Code-sign the executable and installer before public distribution.
+- Measure idle CPU, memory, disk-write rate, and database growth on 4 GB hardware.
 
 ## 6. Portfolio Quality Gates
 
@@ -90,6 +96,6 @@ Before enabling real healing:
 
 ## Current Honest Status
 
-PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates, dry-run healing plans, simulated before/after verification, final policy guardrails, runtime health evidence, and per-device adaptive baselines.
+PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates, dry-run healing plans, simulated before/after verification, final policy guardrails, runtime health evidence, per-device adaptive baselines, low-end autopilot recommendations, tray-agent operation, and benchmark estimates.
 
-It is not yet production-ready for autonomous healing. The next production milestone is improving CRITICAL and RECOVERY reliability using scenario-labeled data.
+It is not yet production-ready for autonomous healing. Stage 9 performs no process mutation, and Stage 11 after-values are estimates rather than measured post-action evidence. The next production milestone is improving CRITICAL and RECOVERY reliability using scenario-labeled data, then implementing one reversible action behind every existing safety gate.

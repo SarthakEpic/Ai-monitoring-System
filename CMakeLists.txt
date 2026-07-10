@@ -12,10 +12,14 @@ add_executable(PredictiveAutoHeal
     AdaptiveBaseline.cpp
     AppConfig.cpp
     AutoHealPlanner.cpp
+    BackgroundAgent.cpp
+    BenchmarkProof.cpp
     DecisionEngine.cpp
     HealingVerifier.cpp
+    LowEndAutopilot.cpp
     MetricsPipeline.cpp
     MetricsStorage.cpp
+    StageControlCenterUI.cpp
     RuntimeHealth.cpp
     SafetyPolicy.cpp
     ProcessClassifier.cpp
@@ -27,7 +31,7 @@ add_executable(PredictiveAutoHeal
 )
 
 target_compile_definitions(PredictiveAutoHeal PRIVATE UNICODE _UNICODE NOMINMAX)
-target_link_libraries(PredictiveAutoHeal PRIVATE Advapi32 User32 Gdi32 Iphlpapi Psapi Wintrust Crypt32)
+target_link_libraries(PredictiveAutoHeal PRIVATE Advapi32 User32 Gdi32 Iphlpapi Psapi Wintrust Crypt32 Shell32)
 
 add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -46,6 +50,8 @@ add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
         "${CMAKE_SOURCE_DIR}/safety_policy_summary.py"
         "${CMAKE_SOURCE_DIR}/runtime_health_summary.py"
         "${CMAKE_SOURCE_DIR}/adaptive_baseline_summary.py"
+        "${CMAKE_SOURCE_DIR}/autopilot_summary.py"
+        "${CMAKE_SOURCE_DIR}/install_startup.ps1"
         "${CMAKE_SOURCE_DIR}/training_label.txt"
         "${CMAKE_SOURCE_DIR}/PROCESS_GENOME.md"
         "${CMAKE_SOURCE_DIR}/USER_INTENT.md"
@@ -55,6 +61,9 @@ add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
         "${CMAKE_SOURCE_DIR}/SAFETY_POLICY.md"
         "${CMAKE_SOURCE_DIR}/RUNTIME_OBSERVABILITY.md"
         "${CMAKE_SOURCE_DIR}/ADAPTIVE_BASELINE.md"
+        "${CMAKE_SOURCE_DIR}/LOW_END_AUTOPILOT.md"
+        "${CMAKE_SOURCE_DIR}/BACKGROUND_AGENT.md"
+        "${CMAKE_SOURCE_DIR}/BENCHMARK_PROOF.md"
         "${CMAKE_SOURCE_DIR}/DATA_COLLECTION.md"
         "${CMAKE_SOURCE_DIR}/requirements.txt"
         "$<TARGET_FILE_DIR:PredictiveAutoHeal>"
@@ -74,3 +83,16 @@ foreach(OPTIONAL_MODEL_FILE IN LISTS OPTIONAL_MODEL_FILES)
         )
     endif()
 endforeach()
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(StageAutopilotTests
+        StageAutopilotTests.cpp
+        BackgroundAgent.cpp
+        BenchmarkProof.cpp
+        LowEndAutopilot.cpp
+    )
+    target_compile_definitions(StageAutopilotTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME StageAutopilotTests COMMAND StageAutopilotTests)
+endif()

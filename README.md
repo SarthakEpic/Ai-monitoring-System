@@ -16,6 +16,9 @@ The current version focuses on safe predictive monitoring: it detects resource p
 - Safety Policy Engine with forbidden/review/simulation/execution-eligible guardrails
 - Runtime Observability Engine with model path, latency, fallback-rate, SQLite-health, and alert counters
 - Adaptive Baseline Engine that learns per-device normal CPU, memory, disk, network, process, and top-process behavior
+- Low-End PC Autopilot that protects foreground work and ranks reversible background optimizations
+- Background Agent with tray control, start-hidden mode, close-to-tray, startup registration, and safe Quick Restore reset
+- Proof / Benchmark Mode with transparent before/after estimates, recovered resources, confidence, and user-app impact
 - SQLite time-series telemetry storage
 - SQLite process intelligence history in `process_samples`
 - SQLite user intent history in `user_intent_samples`
@@ -25,6 +28,10 @@ The current version focuses on safe predictive monitoring: it detects resource p
 - SQLite safety policy history in `safety_policy_evaluations`
 - SQLite runtime health history in `runtime_health_samples`
 - SQLite adaptive baseline history in `adaptive_baseline_samples`
+- SQLite low-end autopilot history in `low_end_autopilot_samples` and `autopilot_actions`
+- SQLite background-agent history in `background_agent_samples`
+- SQLite proof history in `benchmark_proof_samples`
+- Throttled Stage 9-11 writes for low-end devices, with immediate logging on state changes
 - Background batching pipeline for low-overhead writes
 - AI reliability contract with risk, confidence, class, reason, and recommended action
 - Persistent local inference service so the model loads once instead of spawning Python every prediction
@@ -79,6 +86,15 @@ Runtime Observability Engine
 Adaptive Baseline Engine
       |
       v
+Low-End PC Autopilot
+      |
+      +--------------------+
+      v                    v
+Background Agent      Proof / Benchmark
+      |                    |
+      +--------------------+
+      |
+      v
 Dashboard + Alerts + Auto-heal readiness
 ```
 
@@ -97,6 +113,9 @@ Dashboard + Alerts + Auto-heal readiness
 | Safety Policy Engine | Working phase 6 |
 | Runtime Observability Engine | Working phase 7 |
 | Adaptive Baseline Engine | Working phase 8 |
+| Low-End PC Autopilot | Working phase 9, recommendation-only |
+| Background Agent / tray | Working phase 10 |
+| Proof / Benchmark Mode | Working phase 11, estimated results |
 | AI risk prediction | Working prototype |
 | Model confidence/reasons | Working prototype |
 | Persistent inference service | Working |
@@ -133,6 +152,10 @@ PredictiveAutoHeal/
 ├── SafetyPolicy.*            # Final policy guardrails and execution eligibility
 ├── RuntimeHealth.*           # Runtime reliability scoring and health snapshots
 ├── AdaptiveBaseline.*        # Per-device baseline learning and drift scoring
+├── LowEndAutopilot.*         # Safe low-end process ranking and reversible recommendations
+├── BackgroundAgent.*         # Tray/background runtime state contract
+├── BenchmarkProof.*          # Transparent before/after optimization estimates
+├── StageControlCenterUI.*    # Autopilot, agent, and proof dashboard panels
 ├── AppConfig.*               # Config file parsing
 ├── train_model.py            # Model training and reliability report
 ├── predict_model.py          # Runtime prediction CLI
@@ -149,6 +172,7 @@ PredictiveAutoHeal/
 ├── safety_policy_summary.py  # Safety policy gate checker
 ├── runtime_health_summary.py # Runtime health checker
 ├── adaptive_baseline_summary.py # Adaptive baseline checker
+├── autopilot_summary.py      # Stage 9-11 telemetry and proof checker
 ├── test_model_contract.py    # Runtime model contract tests
 ├── PROCESS_GENOME.md         # Process intelligence design notes
 ├── USER_INTENT.md            # User intent design notes
@@ -158,6 +182,9 @@ PredictiveAutoHeal/
 ├── SAFETY_POLICY.md          # Final safety-policy guardrails notes
 ├── RUNTIME_OBSERVABILITY.md  # Runtime observability notes
 ├── ADAPTIVE_BASELINE.md      # Per-device baseline learning notes
+├── LOW_END_AUTOPILOT.md      # Low-end product behavior and safety boundary
+├── BACKGROUND_AGENT.md       # Tray agent and startup behavior
+├── BENCHMARK_PROOF.md        # Proof-mode semantics and limitations
 ├── DATA_COLLECTION.md        # Training data collection guide
 ├── TRANSFER.md               # Portable deployment guide
 └── requirements.txt
@@ -215,6 +242,14 @@ AI_INFERENCE_MODE=SERVICE
 AI_SERVICE_POLL_MS=1000
 AUTO_HEAL_ENABLED=0
 AUTO_HEAL_DRY_RUN=1
+LOW_END_AUTOPILOT_ENABLED=1
+AUTOPILOT_PROTECT_FOREGROUND=1
+AUTOPILOT_REVERSIBLE_ONLY=1
+AUTOPILOT_TELEMETRY_LOG_INTERVAL_TICKS=10
+BACKGROUND_AGENT_ENABLED=1
+AGENT_TRAY_ICON=1
+AGENT_HIDE_ON_MINIMIZE=1
+AGENT_CLOSE_TO_TRAY=1
 ```
 
 Performance modes:
@@ -224,6 +259,28 @@ Performance modes:
 | `LOW_END` | 4 GB RAM / weak devices |
 | `BALANCED` | Normal laptops/desktops |
 | `HIGH_PERFORMANCE` | Strong devices with faster model checks |
+
+## Background Agent
+
+Start hidden in the Windows tray:
+
+```powershell
+.\build\Debug\PredictiveAutoHeal.exe --agent
+```
+
+Install start-on-boot from a packaged release folder:
+
+```powershell
+.\install_startup.ps1
+```
+
+Remove the startup entry:
+
+```powershell
+.\install_startup.ps1 -Remove
+```
+
+Closing or minimizing the dashboard keeps monitoring alive in the tray by default. Use the tray menu's `Exit` command to stop the agent. Quick Restore is currently a dry-run reset and never changes a process.
 
 ## Training Data Collection
 
@@ -289,6 +346,12 @@ Inspect Stage 8 adaptive baselines:
 
 ```powershell
 python adaptive_baseline_summary.py --db build\Debug\monitor.db
+```
+
+Inspect Stages 9-11 autopilot, agent, and proof telemetry:
+
+```powershell
+python autopilot_summary.py --db build\Debug\monitor.db
 ```
 
 See `DATA_COLLECTION.md` for safe collection guidance.
@@ -386,6 +449,19 @@ adaptive_baseline_samples
 
 Each sample includes learned means, baseline status, dominant drift metric, anomaly score, confidence, and the small risk adjustment used by the decision engine.
 
+Stage 9 records low-end planning in:
+
+```text
+low_end_autopilot_samples
+autopilot_actions
+```
+
+These rows contain pressure, protected-foreground state, reversible recommendations, candidate targets, safety score, and estimated RAM/CPU recovery. They are plans only, not executed actions.
+
+Stage 10 records tray-agent health in `background_agent_samples`, including control-center mode, visibility, tray readiness, startup registration, and Quick Restore state.
+
+Stage 11 records benchmark evidence in `benchmark_proof_samples`, including before values, after estimates, recovered RAM, action count, confidence, and user apps touched.
+
 The persistent inference service writes:
 
 ```text
@@ -412,7 +488,7 @@ Real healing should only be enabled after:
 - Rollback strategy
 - Operator-visible audit logs
 
-The current Stage 3 decision engine, Stage 4 planner, Stage 5 verifier, Stage 6 policy engine, Stage 7 runtime observability layer, and Stage 8 adaptive baseline engine already produce dry-run recommendations, safety gates, healing playbooks, simulated before/after proof, final policy guardrails, and runtime reliability evidence. Execution remains blocked by default.
+Stages 3-11 now produce decisions, dry-run plans, safety gates, verification estimates, runtime health, per-device baselines, low-end recommendations, background-agent state, and benchmark evidence. Execution remains blocked by default.
 
 ## Portable Deployment
 
@@ -430,6 +506,8 @@ labeling.py
 ai_model.joblib
 ai_model_meta.json
 requirements.txt
+install_startup.ps1
+autopilot_summary.py
 ```
 
 ## Roadmap To Production

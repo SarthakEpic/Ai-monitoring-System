@@ -1,10 +1,12 @@
 #include <windows.h>
 #include <windowsx.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cwctype>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -19,12 +21,16 @@
 
 #include "AdaptiveBaseline.h"
 #include "AutoHealPlanner.h"
+#include "BackgroundAgent.h"
+#include "BenchmarkProof.h"
 #include "AppConfig.h"
 #include "DecisionEngine.h"
 #include "HealingVerifier.h"
+#include "LowEndAutopilot.h"
 #include "MetricsPipeline.h"
 #include "RuntimeHealth.h"
 #include "SafetyPolicy.h"
+#include "StageControlCenterUI.h"
 #include "MetricsStorage.h"
 #include "SystemMetrics.h"
 
@@ -43,16 +49,24 @@ constexpr int AI_MODEL_RETRY_COUNT = 1;
 constexpr int AI_MODEL_RETRY_DELAY_MS = 60;
 constexpr int DEFAULT_AI_MODEL_TIMEOUT_MS = 8000;
 constexpr int DEFAULT_AI_MODEL_CACHE_TTL_TICKS = 30;
+constexpr UINT WM_TRAYICON_MESSAGE = WM_APP + 42;
+constexpr UINT ID_TRAY_OPEN_DASHBOARD = 5001;
+constexpr UINT ID_TRAY_QUICK_RESTORE = 5002;
+constexpr UINT ID_TRAY_EXIT = 5003;
 
 enum class DashboardView {
     Overview,
     Reliability,
     Runtime,
     AutoHeal,
+    Autopilot,
+    Proof,
 };
 
 double g_cpu = 0.0;
 double g_mem = 0.0;
+double g_totalMemoryMB = 0.0;
+double g_availableMemoryMB = 0.0;
 double g_disk = 0.0;
 double g_aiProb = 0.0;
 double g_aiConfidence = 0.0;
@@ -127,6 +141,9 @@ MetricsPipeline g_pipeline;
 DecisionEngine g_decisionEngine;
 AutoHealPlanner g_autoHealPlanner;
 AdaptiveBaselineEngine g_adaptiveBaseline;
+LowEndAutopilotEngine g_lowEndAutopilot;
+BackgroundAgentEngine g_backgroundAgent;
+BenchmarkProofEngine g_benchmarkProof;
 HealingVerifier g_healingVerifier;
 SafetyPolicyEngine g_safetyPolicyEngine;
 RuntimeHealthMonitor g_runtimeHealth;
@@ -135,12 +152,21 @@ HealVerification g_healVerification;
 SafetyPolicyResult g_safetyPolicyResult;
 RuntimeHealthSample g_runtimeHealthSample;
 AdaptiveBaselineResult g_adaptiveBaselineResult;
+LowEndAutopilotResult g_autopilotResult;
+BackgroundAgentResult g_backgroundAgentResult;
+BenchmarkProofResult g_benchmarkProofResult;
 atomic<bool> g_running = true;
 thread g_monitorThread;
 long long g_tick = 0;
 DashboardView g_dashboardView = DashboardView::Overview;
 PROCESS_INFORMATION g_inferenceServiceProcess{};
 bool g_inferenceServiceActive = false;
+NOTIFYICONDATAW g_trayIcon{};
+bool g_trayIconInstalled = false;
+atomic<int> g_quickRestoreRequests = 0;
+string g_quickRestoreStatus = "IDLE";
+bool g_agentStartMinimized = false;
+UINT g_taskbarCreatedMessage = 0;
 
 template <typename T>
 string DequeToJsonArray(const deque<T>& values) {
@@ -499,6 +525,116 @@ void AppendRuntimeLog(const string& event, const map<string, string>& fields) {
     file << "}\n";
 }
 
+
+bool ConfigBool(const string& key, bool defaultValue) {
+    return g_config.GetInt(key, defaultValue ? 1 : 0) != 0;
+}
+
+LowEndAutopilotConfig BuildLowEndAutopilotConfig(const string& performanceMode) {
+    LowEndAutopilotConfig config;
+    config.enabled = ConfigBool("LOW_END_AUTOPILOT_ENABLED", performanceMode == "LOW_END");
+    config.forceLowEndDevice = ConfigBool("LOW_END_FORCE", false) || performanceMode == "LOW_END";
+    config.protectForegroundApp = ConfigBool("AUTOPILOT_PROTECT_FOREGROUND", true);
+    config.delayUpdaterAndSyncApps = ConfigBool("AUTOPILOT_DELAY_UPDATERS", true);
+    config.sleepUnusedBrowserHelpers = ConfigBool("AUTOPILOT_SLEEP_BROWSER_HELPERS", true);
+    config.preferReversibleActions = ConfigBool("AUTOPILOT_REVERSIBLE_ONLY", true);
+    config.maxActionsPerCycle = max(1, g_config.GetInt("AUTOPILOT_MAX_ACTIONS", 4));
+    config.weakDeviceMemoryMB = max(1024.0, g_config.GetDouble("LOW_END_RAM_MB", 4608.0));
+    config.memoryPressureThreshold = ClampDouble(g_config.GetDouble("AUTOPILOT_MEMORY_PRESSURE", 78.0), 1.0, 100.0);
+    config.cpuPressureThreshold = ClampDouble(g_config.GetDouble("AUTOPILOT_CPU_PRESSURE", 70.0), 1.0, 100.0);
+    config.diskFreePressureThreshold = ClampDouble(g_config.GetDouble("AUTOPILOT_DISK_FREE_PRESSURE", 8.0), 1.0, 50.0);
+    config.minCandidateSafetyScore = ClampDouble(g_config.GetDouble("AUTOPILOT_MIN_SAFETY", 55.0), 0.0, 100.0);
+    return config;
+}
+
+bool IsStartupAgentRegistered() {
+    wchar_t value[2048]{};
+    DWORD valueSize = sizeof(value);
+    const LSTATUS status = RegGetValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        L"PredictiveAutoHealAgent",
+        RRF_RT_REG_SZ,
+        nullptr,
+        value,
+        &valueSize
+    );
+    return status == ERROR_SUCCESS;
+}
+
+BackgroundAgentConfig BuildBackgroundAgentConfig(HWND hwnd) {
+    BackgroundAgentConfig config;
+    config.enabled = ConfigBool("BACKGROUND_AGENT_ENABLED", true);
+    config.trayIconEnabled = ConfigBool("AGENT_TRAY_ICON", true);
+    config.silentMonitoring = ConfigBool("AGENT_SILENT_MONITORING", true);
+    config.startOnBootConfigured = ConfigBool("AGENT_START_ON_BOOT", false) || IsStartupAgentRegistered();
+    config.startMinimized = g_agentStartMinimized || ConfigBool("AGENT_START_MINIMIZED", false);
+    config.hideOnMinimize = ConfigBool("AGENT_HIDE_ON_MINIMIZE", true);
+    config.quickRestoreEnabled = ConfigBool("AGENT_QUICK_RESTORE", true);
+    config.trayIconInstalled = g_trayIconInstalled;
+    config.dashboardVisible = hwnd && IsWindowVisible(hwnd);
+    config.quickRestoreRequested = g_quickRestoreRequests.load() > 0;
+    {
+        lock_guard<mutex> lock(g_dataMutex);
+        config.quickRestoreStatus = g_quickRestoreStatus;
+    }
+    return config;
+}
+
+bool CommandLineHasFlag(const wstring& flag) {
+    wstring commandLine = GetCommandLineW();
+    transform(commandLine.begin(), commandLine.end(), commandLine.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(towlower(ch));
+    });
+    wstring normalized = flag;
+    transform(normalized.begin(), normalized.end(), normalized.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(towlower(ch));
+    });
+    return commandLine.find(normalized) != wstring::npos;
+}
+
+void ShowDashboardWindow(HWND hwnd) {
+    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_RESTORE);
+    SetForegroundWindow(hwnd);
+}
+
+void InstallTrayIcon(HWND hwnd) {
+    if (g_trayIconInstalled || !ConfigBool("AGENT_TRAY_ICON", true)) return;
+
+    ZeroMemory(&g_trayIcon, sizeof(g_trayIcon));
+    g_trayIcon.cbSize = sizeof(g_trayIcon);
+    g_trayIcon.hWnd = hwnd;
+    g_trayIcon.uID = 1;
+    g_trayIcon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    g_trayIcon.uCallbackMessage = WM_TRAYICON_MESSAGE;
+    g_trayIcon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcscpy_s(g_trayIcon.szTip, L"PredictiveAutoHeal Agent");
+    g_trayIconInstalled = Shell_NotifyIconW(NIM_ADD, &g_trayIcon) == TRUE;
+}
+
+void RemoveTrayIcon() {
+    if (!g_trayIconInstalled) return;
+    Shell_NotifyIconW(NIM_DELETE, &g_trayIcon);
+    g_trayIconInstalled = false;
+}
+
+void ShowTrayMenu(HWND hwnd) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN_DASHBOARD, L"Open Dashboard");
+    AppendMenuW(menu, MF_STRING, ID_TRAY_QUICK_RESTORE, L"Quick Restore (simulation)");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Exit");
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(hwnd);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+}
+
 double ComputeFallbackProbability(double cpu, double mem, double disk, int cpuTh, int memTh, int diskTh) {
     double cpuScore = ClampDouble((cpu / max(1, cpuTh)) * 100.0, 0.0, 100.0);
     double memScore = ClampDouble((mem / max(1, memTh)) * 100.0, 0.0, 100.0);
@@ -816,13 +952,17 @@ void DrawDashboardTab(HDC hdc, int x, int y, const string& text, bool active) {
 RECT DashboardTabRect(int mainX, int y, DashboardView view) {
     switch (view) {
     case DashboardView::Overview:
-        return RECT{ mainX, y, mainX + 124, y + 34 };
+        return RECT{ mainX, y, mainX + 104, y + 34 };
     case DashboardView::Reliability:
-        return RECT{ mainX + 134, y, mainX + 318, y + 34 };
+        return RECT{ mainX + 112, y, mainX + 266, y + 34 };
     case DashboardView::Runtime:
-        return RECT{ mainX + 328, y, mainX + 444, y + 34 };
+        return RECT{ mainX + 274, y, mainX + 374, y + 34 };
     case DashboardView::AutoHeal:
-        return RECT{ mainX + 454, y, mainX + 590, y + 34 };
+        return RECT{ mainX + 382, y, mainX + 494, y + 34 };
+    case DashboardView::Autopilot:
+        return RECT{ mainX + 502, y, mainX + 622, y + 34 };
+    case DashboardView::Proof:
+        return RECT{ mainX + 630, y, mainX + 724, y + 34 };
     default:
         return RECT{ mainX, y, mainX, y };
     }
@@ -1166,6 +1306,8 @@ void MonitorThread(HWND hwnd) {
     int runtimeHealthLogIntervalTicks = max(5, g_config.GetInt("RUNTIME_HEALTH_LOG_INTERVAL_TICKS", 30));
     int baselineMinSamples = max(10, g_config.GetInt("BASELINE_MIN_SAMPLES", 30));
     double baselineSensitivity = ClampDouble(g_config.GetDouble("BASELINE_SENSITIVITY", 1.6), 0.6, 3.0);
+    int autopilotTelemetryLogIntervalTicks = max(1, g_config.GetInt("AUTOPILOT_TELEMETRY_LOG_INTERVAL_TICKS", performanceMode == "LOW_END" ? 10 : 5));
+    LowEndAutopilotConfig lowEndAutopilotConfig = BuildLowEndAutopilotConfig(performanceMode);
     DecisionThresholds decisionThresholds;
     decisionThresholds.cpuThreshold = cpuTh;
     decisionThresholds.memThreshold = memTh;
@@ -1193,6 +1335,9 @@ void MonitorThread(HWND hwnd) {
     int lowRiskStreak = 0;
     ModelPrediction lastModelPrediction;
     long long lastModelTick = -modelCacheTtlTicks;
+    string lastLoggedAutopilotStatus;
+    string lastLoggedAgentStatus;
+    string lastLoggedProofStatus;
 
     while (g_running) {
         this_thread::sleep_for(seconds(1));
@@ -1214,6 +1359,8 @@ void MonitorThread(HWND hwnd) {
 
             g_cpu = snapshot.cpuUsage;
             g_mem = snapshot.memoryUsage;
+            g_totalMemoryMB = snapshot.totalMemoryMB;
+            g_availableMemoryMB = snapshot.availableMemoryMB;
             g_disk = snapshot.diskFree;
             g_netDown = snapshot.netDownKBps;
             g_netUp = snapshot.netUpKBps;
@@ -1403,6 +1550,13 @@ void MonitorThread(HWND hwnd) {
         HealPlan healPlan = g_autoHealPlanner.BuildPlan(snapshot, decisionResult, decisionPolicy);
         HealVerification healVerification = g_healingVerifier.Evaluate(snapshot, decisionResult, healPlan);
         SafetyPolicyResult policyResult = g_safetyPolicyEngine.Evaluate(snapshot, decisionResult, healPlan, healVerification, decisionPolicy);
+        LowEndAutopilotResult autopilotResult = g_lowEndAutopilot.Evaluate(snapshot, decisionResult, healPlan, baselineResult, lowEndAutopilotConfig);
+        BackgroundAgentConfig backgroundAgentConfig = BuildBackgroundAgentConfig(hwnd);
+        BackgroundAgentResult backgroundAgentResult = g_backgroundAgent.Evaluate(snapshot, autopilotResult, backgroundAgentConfig);
+        BenchmarkProofResult benchmarkProofResult = g_benchmarkProof.Build(snapshot, decisionResult, healPlan, autopilotResult);
+        if (backgroundAgentResult.quickRestoreRequested) {
+            g_quickRestoreRequests.store(0);
+        }
 
         {
             lock_guard<mutex> lock(g_dataMutex);
@@ -1428,6 +1582,9 @@ void MonitorThread(HWND hwnd) {
             g_healVerification = healVerification;
             g_safetyPolicyResult = policyResult;
             g_adaptiveBaselineResult = baselineResult;
+            g_autopilotResult = autopilotResult;
+            g_backgroundAgentResult = backgroundAgentResult;
+            g_benchmarkProofResult = benchmarkProofResult;
 
             if (decisionResult.level == RiskLevel::Critical) {
                 ++highRiskStreak;
@@ -1513,6 +1670,48 @@ void MonitorThread(HWND hwnd) {
                 {"anomaly", to_string(static_cast<int>(baselineResult.anomalyScore))},
             });
         }
+
+        const bool stageStatusChanged =
+            autopilotResult.status != lastLoggedAutopilotStatus ||
+            backgroundAgentResult.status != lastLoggedAgentStatus ||
+            benchmarkProofResult.status != lastLoggedProofStatus;
+        const bool shouldLogAutopilotTelemetry =
+            stageStatusChanged || (g_tick % autopilotTelemetryLogIntervalTicks) == 0;
+        if (shouldLogAutopilotTelemetry) {
+            const bool autopilotOk = g_storage.LogLowEndAutopilot(autopilotResult);
+            g_runtimeHealth.RecordStorageWrite("low_end_autopilot", autopilotOk);
+            if (!autopilotOk) {
+                AppendRuntimeLog("low_end_autopilot_write_failed", {
+                    {"status", autopilotResult.status},
+                    {"actions", to_string(autopilotResult.actionsRecommended)},
+                    {"primary_action", autopilotResult.primaryAction},
+                });
+            }
+
+            const bool backgroundAgentOk = g_storage.LogBackgroundAgent(backgroundAgentResult);
+            g_runtimeHealth.RecordStorageWrite("background_agent", backgroundAgentOk);
+            if (!backgroundAgentOk) {
+                AppendRuntimeLog("background_agent_write_failed", {
+                    {"status", backgroundAgentResult.status},
+                    {"mode", backgroundAgentResult.mode},
+                    {"tray", backgroundAgentResult.trayIconReady ? "1" : "0"},
+                });
+            }
+
+            const bool benchmarkProofOk = g_storage.LogBenchmarkProof(benchmarkProofResult);
+            g_runtimeHealth.RecordStorageWrite("benchmark_proof", benchmarkProofOk);
+            if (!benchmarkProofOk) {
+                AppendRuntimeLog("benchmark_proof_write_failed", {
+                    {"status", benchmarkProofResult.status},
+                    {"actions", to_string(benchmarkProofResult.actionsRecommended)},
+                    {"recovered_ram", to_string(static_cast<int>(benchmarkProofResult.recoveredRamMB))},
+                });
+            }
+
+            lastLoggedAutopilotStatus = autopilotResult.status;
+            lastLoggedAgentStatus = backgroundAgentResult.status;
+            lastLoggedProofStatus = benchmarkProofResult.status;
+        }
         if (alertLocal && !lastAlert) {
             g_runtimeHealth.RecordAlert();
             string msg =
@@ -1567,6 +1766,11 @@ void MonitorThread(HWND hwnd) {
                 {"baseline_status", baselineResult.status},
                 {"baseline_anomaly", to_string(static_cast<int>(baselineResult.anomalyScore))},
                 {"baseline_metric", baselineResult.dominantMetric},
+                {"autopilot_status", autopilotResult.status},
+                {"autopilot_actions", to_string(autopilotResult.actionsRecommended)},
+                {"autopilot_recovered_ram", to_string(static_cast<int>(autopilotResult.estimatedRecoveredRamMB))},
+                {"agent_status", backgroundAgentResult.status},
+                {"proof_status", benchmarkProofResult.status},
                 {"user_state", snapshot.intent.userState},
                 {"foreground_process", snapshot.intent.foregroundProcess},
                 {"app_kind", snapshot.intent.appKind},
@@ -1665,6 +1869,11 @@ void MonitorThread(HWND hwnd) {
                 {"baseline_status", baselineResult.status},
                 {"baseline_anomaly", to_string(static_cast<int>(baselineResult.anomalyScore))},
                 {"baseline_metric", baselineResult.dominantMetric},
+                {"autopilot_status", autopilotResult.status},
+                {"autopilot_actions", to_string(autopilotResult.actionsRecommended)},
+                {"autopilot_recovered_ram", to_string(static_cast<int>(autopilotResult.estimatedRecoveredRamMB))},
+                {"agent_status", backgroundAgentResult.status},
+                {"proof_status", benchmarkProofResult.status},
                 {"model_readiness", g_modelReadiness},
                 {"risk", to_string(static_cast<int>(decisionResult.riskScore))},
                 {"ai_probability", to_string(static_cast<int>(currentAiProb))},
@@ -1681,6 +1890,8 @@ void MonitorThread(HWND hwnd) {
                 {"foreground_process", snapshot.intent.foregroundProcess},
                 {"app_kind", snapshot.intent.appKind},
                 {"idle_seconds", to_string(static_cast<int>(snapshot.intent.idleSeconds))},
+                {"quick_restore", backgroundAgentResult.quickRestoreStatus},
+                {"benchmark_recovered_ram", to_string(static_cast<int>(benchmarkProofResult.recoveredRamMB))},
             });
         }
 
@@ -1692,6 +1903,12 @@ void MonitorThread(HWND hwnd) {
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (g_taskbarCreatedMessage != 0 && uMsg == g_taskbarCreatedMessage) {
+        g_trayIconInstalled = false;
+        InstallTrayIcon(hwnd);
+        return 0;
+    }
+
     switch (uMsg) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
@@ -1733,6 +1950,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SafetyPolicyResult policyResult;
         RuntimeHealthSample runtimeHealth;
         AdaptiveBaselineResult baseline;
+        LowEndAutopilotResult autopilot;
+        BackgroundAgentResult backgroundAgent;
+        BenchmarkProofResult benchmarkProof;
         int modelFeatureCount = 0;
         int cooldownRemainingSeconds = 0;
         int candidateCount = 0;
@@ -1759,6 +1979,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             lock_guard<mutex> lock(g_dataMutex);
             snapshot.cpuUsage = g_cpu;
             snapshot.memoryUsage = g_mem;
+            snapshot.totalMemoryMB = g_totalMemoryMB;
+            snapshot.availableMemoryMB = g_availableMemoryMB;
             snapshot.diskFree = g_disk;
             snapshot.netDownKBps = g_netDown;
             snapshot.netUpKBps = g_netUp;
@@ -1811,6 +2033,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             policyResult = g_safetyPolicyResult;
             runtimeHealth = g_runtimeHealthSample;
             baseline = g_adaptiveBaselineResult;
+            autopilot = g_autopilotResult;
+            backgroundAgent = g_backgroundAgentResult;
+            benchmarkProof = g_benchmarkProofResult;
             decisionSummary = g_decisionSummary;
             decisionLevel = g_decisionLevel;
             cpuHist = g_cpuHist;
@@ -1863,6 +2088,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawTextAt(memDC, 18, 862, "POL   " + ShortenText(ToUpperAscii(ToDisplayToken(policyResult.levelName)), 16), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 886, "HLTH  " + ShortenText(ToUpperAscii(ToDisplayToken(runtimeHealth.status)), 16), RuntimeHealthAccentColor(runtimeHealth.status), gFontSmall);
         DrawTextAt(memDC, 18, 910, "BASE  " + ShortenText(ToUpperAscii(ToDisplayToken(baseline.status)), 16), RGB(180, 220, 255), gFontSmall);
+        DrawTextAt(memDC, 18, 934, "AUTO  " + ShortenText(ToUpperAscii(ToDisplayToken(autopilot.status)), 16), autopilot.active ? RGB(120, 220, 160) : RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 958, "AGENT " + ShortenText(ToUpperAscii(ToDisplayToken(backgroundAgent.status)), 16), backgroundAgent.trayIconReady ? RGB(120, 220, 160) : RGB(255, 210, 120), gFontSmall);
+        DrawTextAt(memDC, 18, 982, "PROOF " + ShortenText(ToUpperAscii(ToDisplayToken(benchmarkProof.status)), 16), benchmarkProof.status == "PROOF_READY" ? RGB(120, 220, 160) : RGB(170, 180, 195), gFontSmall);
 
         int mainX = sidebarW + pad;
         int mainW = client.right - mainX - pad;
@@ -1873,10 +2101,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         RECT reliabilityTab = DashboardTabRect(mainX, 62, DashboardView::Reliability);
         RECT runtimeTab = DashboardTabRect(mainX, 62, DashboardView::Runtime);
         RECT autoHealTab = DashboardTabRect(mainX, 62, DashboardView::AutoHeal);
+        RECT autopilotTab = DashboardTabRect(mainX, 62, DashboardView::Autopilot);
+        RECT proofTab = DashboardTabRect(mainX, 62, DashboardView::Proof);
         DrawDashboardTabRect(memDC, overviewTab, "Overview", g_dashboardView == DashboardView::Overview);
         DrawDashboardTabRect(memDC, reliabilityTab, "AI Reliability", g_dashboardView == DashboardView::Reliability);
         DrawDashboardTabRect(memDC, runtimeTab, "Runtime", g_dashboardView == DashboardView::Runtime);
         DrawDashboardTabRect(memDC, autoHealTab, "Auto-Heal", g_dashboardView == DashboardView::AutoHeal);
+        DrawDashboardTabRect(memDC, autopilotTab, "Autopilot", g_dashboardView == DashboardView::Autopilot);
+        DrawDashboardTabRect(memDC, proofTab, "Proof", g_dashboardView == DashboardView::Proof);
 
         RECT statusBadge{ client.right - 220, 18, client.right - 20, 56 };
         DrawRoundedPanel(memDC, statusBadge, LevelFillColor(decisionLevel), LevelAccentColor(decisionLevel), 18);
@@ -1935,7 +2167,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
             DrawDecisionPanel(memDC, healRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
             DrawAutoHealPanel(memDC, thresholdRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
-        } else {
+        } else if (g_dashboardView == DashboardView::AutoHeal) {
             RECT healWide{ mainX, middleTop, mainX + (mainW / 2) - gap, middleTop + middleH };
             RECT decisionWide{ healWide.right + gap, middleTop, client.right - pad, middleTop + middleH };
             DrawAutoHealPanel(memDC, healWide, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
@@ -1944,6 +2176,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
             DrawRuntimePanel(memDC, healRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
             DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
+        } else if (g_dashboardView == DashboardView::Autopilot) {
+            const int autopilotWidth = (mainW * 3) / 5;
+            RECT autopilotWide{ mainX, middleTop, mainX + autopilotWidth, middleTop + middleH };
+            RECT agentWide{ autopilotWide.right + gap, middleTop, client.right - pad, middleTop + middleH };
+            DrawLowEndAutopilotPanel(memDC, autopilotWide, autopilot, gFontSection, gFontValue, gFontSmall);
+            DrawBackgroundAgentPanel(memDC, agentWide, backgroundAgent, gFontSection, gFontSmall);
+            DrawDecisionPanel(memDC, decisionRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
+            DrawRuntimePanel(memDC, runtimeRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
+            DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
+            DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
+        } else {
+            RECT proofWide{ mainX, middleTop, client.right - pad, middleTop + middleH };
+            DrawBenchmarkProofPanel(memDC, proofWide, benchmarkProof, gFontSection, gFontValue, gFontSmall);
+            DrawLowEndAutopilotPanel(memDC, decisionRc, autopilot, gFontSection, gFontValue, gFontSmall);
+            DrawBackgroundAgentPanel(memDC, runtimeRc, backgroundAgent, gFontSection, gFontSmall);
+            DrawDecisionPanel(memDC, healRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
+            DrawRuntimePanel(memDC, thresholdRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
         }
 
         BitBlt(hdc, 0, 0, client.right, client.bottom, memDC, 0, 0, SRCCOPY);
@@ -1977,6 +2226,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             nextView = DashboardView::Runtime;
         } else if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::AutoHeal), x, y)) {
             nextView = DashboardView::AutoHeal;
+        } else if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::Autopilot), x, y)) {
+            nextView = DashboardView::Autopilot;
+        } else if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::Proof), x, y)) {
+            nextView = DashboardView::Proof;
         }
 
         if (nextView != g_dashboardView) {
@@ -1986,7 +2239,74 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    case WM_TRAYICON_MESSAGE:
+        if (lParam == WM_LBUTTONDBLCLK) {
+            ShowDashboardWindow(hwnd);
+        } else if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
+            ShowTrayMenu(hwnd);
+        }
+        return 0;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case ID_TRAY_OPEN_DASHBOARD:
+            ShowDashboardWindow(hwnd);
+            return 0;
+        case ID_TRAY_QUICK_RESTORE: {
+            string restoreStatus;
+            bool restoreAvailable = false;
+            {
+                lock_guard<mutex> lock(g_dataMutex);
+                restoreAvailable = g_autopilotResult.quickRestoreAvailable;
+                g_quickRestoreStatus = restoreAvailable ? "DRY_RUN_RESET" : "NO_EXECUTED_ACTIONS";
+                restoreStatus = g_quickRestoreStatus;
+            }
+            g_quickRestoreRequests.store(1);
+            AppendRuntimeLog("quick_restore_requested", {
+                {"status", restoreStatus},
+                {"restore_available", restoreAvailable ? "1" : "0"},
+                {"execution", "none_dry_run_only"},
+            });
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case ID_TRAY_EXIT:
+            DestroyWindow(hwnd);
+            return 0;
+        default:
+            break;
+        }
+        break;
+
+    case WM_GETMINMAXINFO: {
+        auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+        info->ptMinTrackSize.x = 1180;
+        info->ptMinTrackSize.y = 900;
+        return 0;
+    }
+
+    case WM_SIZE:
+        if (wParam == SIZE_MINIMIZED &&
+            ConfigBool("BACKGROUND_AGENT_ENABLED", true) &&
+            ConfigBool("AGENT_HIDE_ON_MINIMIZE", true) &&
+            g_trayIconInstalled) {
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        if (ConfigBool("BACKGROUND_AGENT_ENABLED", true) &&
+            ConfigBool("AGENT_CLOSE_TO_TRAY", true) &&
+            g_trayIconInstalled) {
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        }
+        DestroyWindow(hwnd);
+        return 0;
+
     case WM_DESTROY:
+        RemoveTrayIcon();
         g_running = false;
         if (g_monitorThread.joinable()) {
             g_monitorThread.join();
@@ -2014,6 +2334,8 @@ int main() {
         fs::path("config.txt"),
     });
     g_config.LoadFromFile(configPath);
+    g_agentStartMinimized = CommandLineHasFlag(L"--agent");
+    g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
     g_storage.Open((exeDir / L"monitor.db").string());
     g_pipeline.Start(
         &g_storage,
@@ -2063,8 +2385,17 @@ int main() {
         return 1;
     }
 
-    ShowWindow(hwnd, SW_SHOW);
-    UpdateWindow(hwnd);
+    InstallTrayIcon(hwnd);
+    const bool startHidden =
+        ConfigBool("BACKGROUND_AGENT_ENABLED", true) &&
+        (g_agentStartMinimized || ConfigBool("AGENT_START_MINIMIZED", false));
+    ShowWindow(hwnd, startHidden ? SW_HIDE : SW_SHOW);
+    if (!startHidden) UpdateWindow(hwnd);
+    AppendRuntimeLog("background_agent_started", {
+        {"start_hidden", startHidden ? "1" : "0"},
+        {"tray_icon", g_trayIconInstalled ? "1" : "0"},
+        {"start_on_boot", IsStartupAgentRegistered() ? "1" : "0"},
+    });
 
     g_monitorThread = thread(MonitorThread, hwnd);
 

@@ -348,6 +348,108 @@ bool MetricsStorage::EnsureSchema() {
         if (errMsg) sqlite3_free(errMsg);
         return false;
     }
+    const char* lowEndAutopilotSql =
+        "CREATE TABLE IF NOT EXISTS low_end_autopilot_samples ("
+        "time INTEGER PRIMARY KEY, "
+        "enabled INTEGER DEFAULT 0, "
+        "low_end_device INTEGER DEFAULT 0, "
+        "active INTEGER DEFAULT 0, "
+        "mode TEXT DEFAULT 'STANDARD', "
+        "status TEXT DEFAULT 'DISABLED', "
+        "summary TEXT DEFAULT '', "
+        "pressure_score REAL DEFAULT 0, "
+        "memory_pressure REAL DEFAULT 0, "
+        "cpu_pressure REAL DEFAULT 0, "
+        "disk_pressure REAL DEFAULT 0, "
+        "foreground_protected INTEGER DEFAULT 1, "
+        "quick_restore_available INTEGER DEFAULT 0, "
+        "reversible_action_count INTEGER DEFAULT 0, "
+        "actions_recommended INTEGER DEFAULT 0, "
+        "user_apps_touched INTEGER DEFAULT 0, "
+        "estimated_recovered_ram_mb REAL DEFAULT 0, "
+        "estimated_cpu_drop_percent REAL DEFAULT 0, "
+        "primary_action TEXT DEFAULT 'monitor_only', "
+        "primary_target TEXT DEFAULT 'system', "
+        "safety_notes TEXT DEFAULT '');";
+
+    if (sqlite3_exec(db_, lowEndAutopilotSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
+    const char* autopilotActionsSql =
+        "CREATE TABLE IF NOT EXISTS autopilot_actions ("
+        "time INTEGER NOT NULL, "
+        "rank INTEGER NOT NULL, "
+        "action_type TEXT DEFAULT '', "
+        "action_name TEXT DEFAULT '', "
+        "target_pid INTEGER DEFAULT 0, "
+        "target_name TEXT DEFAULT '', "
+        "category TEXT DEFAULT 'UNKNOWN', "
+        "safety TEXT DEFAULT 'UNKNOWN', "
+        "reason TEXT DEFAULT '', "
+        "reversibility TEXT DEFAULT '', "
+        "expected_ram_mb REAL DEFAULT 0, "
+        "expected_cpu_drop_percent REAL DEFAULT 0, "
+        "safety_score REAL DEFAULT 0, "
+        "foreground_protected INTEGER DEFAULT 1, "
+        "user_app_touched INTEGER DEFAULT 0, "
+        "reversible INTEGER DEFAULT 1, "
+        "PRIMARY KEY(time, rank));";
+
+    if (sqlite3_exec(db_, autopilotActionsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
+    const char* backgroundAgentSql =
+        "CREATE TABLE IF NOT EXISTS background_agent_samples ("
+        "time INTEGER PRIMARY KEY, "
+        "enabled INTEGER DEFAULT 0, "
+        "tray_icon_ready INTEGER DEFAULT 0, "
+        "silent_monitoring INTEGER DEFAULT 0, "
+        "start_on_boot_configured INTEGER DEFAULT 0, "
+        "dashboard_visible INTEGER DEFAULT 1, "
+        "quick_restore_available INTEGER DEFAULT 0, "
+        "quick_restore_requested INTEGER DEFAULT 0, "
+        "mode TEXT DEFAULT 'DASHBOARD', "
+        "status TEXT DEFAULT 'DASHBOARD_ONLY', "
+        "summary TEXT DEFAULT '', "
+        "quick_restore_status TEXT DEFAULT 'IDLE', "
+        "control_center TEXT DEFAULT 'dashboard');";
+
+    if (sqlite3_exec(db_, backgroundAgentSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
+
+    const char* benchmarkProofSql =
+        "CREATE TABLE IF NOT EXISTS benchmark_proof_samples ("
+        "time INTEGER PRIMARY KEY, "
+        "status TEXT DEFAULT 'COLLECTING', "
+        "mode TEXT DEFAULT 'ESTIMATE', "
+        "summary TEXT DEFAULT '', "
+        "before_cpu REAL DEFAULT 0, "
+        "before_memory REAL DEFAULT 0, "
+        "before_disk_free REAL DEFAULT 0, "
+        "before_risk REAL DEFAULT 0, "
+        "after_cpu_estimate REAL DEFAULT 0, "
+        "after_memory_estimate REAL DEFAULT 0, "
+        "after_disk_free_estimate REAL DEFAULT 0, "
+        "after_risk_estimate REAL DEFAULT 0, "
+        "recovered_ram_mb REAL DEFAULT 0, "
+        "cpu_drop_percent REAL DEFAULT 0, "
+        "disk_free_gain_percent REAL DEFAULT 0, "
+        "risk_drop_percent REAL DEFAULT 0, "
+        "actions_recommended INTEGER DEFAULT 0, "
+        "user_apps_touched INTEGER DEFAULT 0, "
+        "confidence REAL DEFAULT 0, "
+        "foreground_process TEXT DEFAULT 'N/A');";
+
+    if (sqlite3_exec(db_, benchmarkProofSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
     const char* processIndexSql =
         "CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples(time);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_category_safety ON process_samples(category, safety);"
@@ -358,7 +460,11 @@ bool MetricsStorage::EnsureSchema() {
         "CREATE INDEX IF NOT EXISTS idx_heal_verifications_status ON heal_verifications(status, outcome_label, action_name);"
         "CREATE INDEX IF NOT EXISTS idx_safety_policy_level ON safety_policy_evaluations(level, reason_code, target_name);"
         "CREATE INDEX IF NOT EXISTS idx_runtime_health_status ON runtime_health_samples(status, prediction_source, prediction_path);"
-        "CREATE INDEX IF NOT EXISTS idx_adaptive_baseline_status ON adaptive_baseline_samples(status, dominant_metric);";
+        "CREATE INDEX IF NOT EXISTS idx_adaptive_baseline_status ON adaptive_baseline_samples(status, dominant_metric);"
+        "CREATE INDEX IF NOT EXISTS idx_low_end_autopilot_status ON low_end_autopilot_samples(status, mode);"
+        "CREATE INDEX IF NOT EXISTS idx_autopilot_actions_time ON autopilot_actions(time, rank);"
+        "CREATE INDEX IF NOT EXISTS idx_background_agent_status ON background_agent_samples(status, mode);"
+        "CREATE INDEX IF NOT EXISTS idx_benchmark_proof_status ON benchmark_proof_samples(status, mode);";
 
     if (sqlite3_exec(db_, processIndexSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -381,7 +487,10 @@ bool MetricsStorage::EnsureSchema() {
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(9, 'heal_verifications', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(10, 'safety_policy_evaluations', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(11, 'runtime_health_samples', strftime('%s','now'));"
-        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(12, 'adaptive_baseline_samples', strftime('%s','now'));";
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(12, 'adaptive_baseline_samples', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(13, 'low_end_autopilot_samples', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(14, 'background_agent_samples', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(15, 'benchmark_proof_samples', strftime('%s','now'));";
 
     if (sqlite3_exec(db_, migrationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -826,6 +935,204 @@ bool MetricsStorage::LogAdaptiveBaseline(const AdaptiveBaselineResult& baseline)
         const long long cutoff = baseline.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
         sqlite3_stmt* retentionStmt = nullptr;
         if (sqlite3_prepare_v2(db_, "DELETE FROM adaptive_baseline_samples WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        }
+    }
+
+    return ok;
+}
+bool MetricsStorage::LogLowEndAutopilot(const LowEndAutopilotResult& autopilot) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO low_end_autopilot_samples("
+        "time, enabled, low_end_device, active, mode, status, summary, pressure_score, memory_pressure, "
+        "cpu_pressure, disk_pressure, foreground_protected, quick_restore_available, reversible_action_count, "
+        "actions_recommended, user_apps_touched, estimated_recovered_ram_mb, estimated_cpu_drop_percent, "
+        "primary_action, primary_target, safety_notes"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(autopilot.timestamp));
+    sqlite3_bind_int(stmt, 2, autopilot.enabled ? 1 : 0);
+    sqlite3_bind_int(stmt, 3, autopilot.lowEndDevice ? 1 : 0);
+    sqlite3_bind_int(stmt, 4, autopilot.active ? 1 : 0);
+    sqlite3_bind_text(stmt, 5, autopilot.mode.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, autopilot.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, autopilot.summary.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 8, autopilot.pressureScore);
+    sqlite3_bind_double(stmt, 9, autopilot.memoryPressure);
+    sqlite3_bind_double(stmt, 10, autopilot.cpuPressure);
+    sqlite3_bind_double(stmt, 11, autopilot.diskPressure);
+    sqlite3_bind_int(stmt, 12, autopilot.foregroundProtected ? 1 : 0);
+    sqlite3_bind_int(stmt, 13, autopilot.quickRestoreAvailable ? 1 : 0);
+    sqlite3_bind_int(stmt, 14, autopilot.reversibleActionCount);
+    sqlite3_bind_int(stmt, 15, autopilot.actionsRecommended);
+    sqlite3_bind_int(stmt, 16, autopilot.userAppsTouched);
+    sqlite3_bind_double(stmt, 17, autopilot.estimatedRecoveredRamMB);
+    sqlite3_bind_double(stmt, 18, autopilot.estimatedCpuDropPercent);
+    sqlite3_bind_text(stmt, 19, autopilot.primaryAction.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 20, autopilot.primaryTarget.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 21, autopilot.safetyNotes.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    if (!ok) return false;
+
+    sqlite3_stmt* deleteStmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "DELETE FROM autopilot_actions WHERE time = ?1;", -1, &deleteStmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_int64(deleteStmt, 1, static_cast<sqlite3_int64>(autopilot.timestamp));
+    ok = sqlite3_step(deleteStmt) == SQLITE_DONE;
+    sqlite3_finalize(deleteStmt);
+    if (!ok) return false;
+
+    const char* actionSql =
+        "INSERT OR REPLACE INTO autopilot_actions("
+        "time, rank, action_type, action_name, target_pid, target_name, category, safety, reason, reversibility, "
+        "expected_ram_mb, expected_cpu_drop_percent, safety_score, foreground_protected, user_app_touched, reversible"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);";
+
+    for (const auto& action : autopilot.recommendations) {
+        sqlite3_stmt* actionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, actionSql, -1, &actionStmt, nullptr) != SQLITE_OK) {
+            return false;
+        }
+        sqlite3_bind_int64(actionStmt, 1, static_cast<sqlite3_int64>(autopilot.timestamp));
+        sqlite3_bind_int(actionStmt, 2, action.rank);
+        sqlite3_bind_text(actionStmt, 3, action.actionType.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(actionStmt, 4, action.actionName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(actionStmt, 5, static_cast<sqlite3_int64>(action.targetPid));
+        sqlite3_bind_text(actionStmt, 6, action.targetName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(actionStmt, 7, action.category.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(actionStmt, 8, action.safety.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(actionStmt, 9, action.reason.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(actionStmt, 10, action.reversibility.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(actionStmt, 11, action.expectedRecoveredRamMB);
+        sqlite3_bind_double(actionStmt, 12, action.expectedCpuDropPercent);
+        sqlite3_bind_double(actionStmt, 13, action.safetyScore);
+        sqlite3_bind_int(actionStmt, 14, action.foregroundProtected ? 1 : 0);
+        sqlite3_bind_int(actionStmt, 15, action.userAppTouched ? 1 : 0);
+        sqlite3_bind_int(actionStmt, 16, action.reversible ? 1 : 0);
+        ok = sqlite3_step(actionStmt) == SQLITE_DONE;
+        sqlite3_finalize(actionStmt);
+        if (!ok) return false;
+    }
+
+    const long long cutoff = autopilot.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+    sqlite3_stmt* retentionStmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "DELETE FROM low_end_autopilot_samples WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+        ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+        sqlite3_finalize(retentionStmt);
+    }
+    if (sqlite3_prepare_v2(db_, "DELETE FROM autopilot_actions WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+        ok = sqlite3_step(retentionStmt) == SQLITE_DONE && ok;
+        sqlite3_finalize(retentionStmt);
+    }
+
+    return ok;
+}
+
+bool MetricsStorage::LogBackgroundAgent(const BackgroundAgentResult& agent) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO background_agent_samples("
+        "time, enabled, tray_icon_ready, silent_monitoring, start_on_boot_configured, dashboard_visible, "
+        "quick_restore_available, quick_restore_requested, mode, status, summary, quick_restore_status, control_center"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(agent.timestamp));
+    sqlite3_bind_int(stmt, 2, agent.enabled ? 1 : 0);
+    sqlite3_bind_int(stmt, 3, agent.trayIconReady ? 1 : 0);
+    sqlite3_bind_int(stmt, 4, agent.silentMonitoring ? 1 : 0);
+    sqlite3_bind_int(stmt, 5, agent.startOnBootConfigured ? 1 : 0);
+    sqlite3_bind_int(stmt, 6, agent.dashboardVisible ? 1 : 0);
+    sqlite3_bind_int(stmt, 7, agent.quickRestoreAvailable ? 1 : 0);
+    sqlite3_bind_int(stmt, 8, agent.quickRestoreRequested ? 1 : 0);
+    sqlite3_bind_text(stmt, 9, agent.mode.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, agent.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 11, agent.summary.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 12, agent.quickRestoreStatus.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, agent.controlCenter.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+
+    if (ok) {
+        const long long cutoff = agent.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+        sqlite3_stmt* retentionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM background_agent_samples WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        }
+    }
+
+    return ok;
+}
+
+bool MetricsStorage::LogBenchmarkProof(const BenchmarkProofResult& proof) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO benchmark_proof_samples("
+        "time, status, mode, summary, before_cpu, before_memory, before_disk_free, before_risk, "
+        "after_cpu_estimate, after_memory_estimate, after_disk_free_estimate, after_risk_estimate, "
+        "recovered_ram_mb, cpu_drop_percent, disk_free_gain_percent, risk_drop_percent, actions_recommended, "
+        "user_apps_touched, confidence, foreground_process"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(proof.timestamp));
+    sqlite3_bind_text(stmt, 2, proof.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, proof.mode.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, proof.summary.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 5, proof.beforeCpu);
+    sqlite3_bind_double(stmt, 6, proof.beforeMemory);
+    sqlite3_bind_double(stmt, 7, proof.beforeDiskFree);
+    sqlite3_bind_double(stmt, 8, proof.beforeRisk);
+    sqlite3_bind_double(stmt, 9, proof.afterCpuEstimate);
+    sqlite3_bind_double(stmt, 10, proof.afterMemoryEstimate);
+    sqlite3_bind_double(stmt, 11, proof.afterDiskFreeEstimate);
+    sqlite3_bind_double(stmt, 12, proof.afterRiskEstimate);
+    sqlite3_bind_double(stmt, 13, proof.recoveredRamMB);
+    sqlite3_bind_double(stmt, 14, proof.cpuDropPercent);
+    sqlite3_bind_double(stmt, 15, proof.diskFreeGainPercent);
+    sqlite3_bind_double(stmt, 16, proof.riskDropPercent);
+    sqlite3_bind_int(stmt, 17, proof.actionsRecommended);
+    sqlite3_bind_int(stmt, 18, proof.userAppsTouched);
+    sqlite3_bind_double(stmt, 19, proof.confidence);
+    sqlite3_bind_text(stmt, 20, proof.foregroundProcess.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+
+    if (ok) {
+        const long long cutoff = proof.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+        sqlite3_stmt* retentionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM benchmark_proof_samples WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
             ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
             sqlite3_finalize(retentionStmt);
