@@ -317,6 +317,37 @@ bool MetricsStorage::EnsureSchema() {
         return false;
     }
 
+    const char* adaptiveBaselineSql =
+        "CREATE TABLE IF NOT EXISTS adaptive_baseline_samples ("
+        "time INTEGER PRIMARY KEY, "
+        "status TEXT DEFAULT 'WARMING_UP', "
+        "summary TEXT DEFAULT '', "
+        "dominant_metric TEXT DEFAULT 'none', "
+        "sample_count INTEGER DEFAULT 0, "
+        "ready INTEGER DEFAULT 0, "
+        "confidence REAL DEFAULT 0, "
+        "anomaly_score REAL DEFAULT 0, "
+        "risk_hint REAL DEFAULT 0, "
+        "risk_adjustment REAL DEFAULT 0, "
+        "cpu_mean REAL DEFAULT 0, "
+        "memory_mean REAL DEFAULT 0, "
+        "disk_free_mean REAL DEFAULT 0, "
+        "network_mean REAL DEFAULT 0, "
+        "process_count_mean REAL DEFAULT 0, "
+        "top_cpu_mean REAL DEFAULT 0, "
+        "top_memory_mean REAL DEFAULT 0, "
+        "cpu_deviation REAL DEFAULT 0, "
+        "memory_deviation REAL DEFAULT 0, "
+        "disk_deviation REAL DEFAULT 0, "
+        "network_deviation REAL DEFAULT 0, "
+        "process_deviation REAL DEFAULT 0, "
+        "top_cpu_deviation REAL DEFAULT 0, "
+        "top_memory_deviation REAL DEFAULT 0);";
+
+    if (sqlite3_exec(db_, adaptiveBaselineSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        return false;
+    }
     const char* processIndexSql =
         "CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples(time);"
         "CREATE INDEX IF NOT EXISTS idx_process_samples_category_safety ON process_samples(category, safety);"
@@ -326,7 +357,8 @@ bool MetricsStorage::EnsureSchema() {
         "CREATE INDEX IF NOT EXISTS idx_heal_plans_status ON heal_plans(status, action_type, gate);"
         "CREATE INDEX IF NOT EXISTS idx_heal_verifications_status ON heal_verifications(status, outcome_label, action_name);"
         "CREATE INDEX IF NOT EXISTS idx_safety_policy_level ON safety_policy_evaluations(level, reason_code, target_name);"
-        "CREATE INDEX IF NOT EXISTS idx_runtime_health_status ON runtime_health_samples(status, prediction_source, prediction_path);";
+        "CREATE INDEX IF NOT EXISTS idx_runtime_health_status ON runtime_health_samples(status, prediction_source, prediction_path);"
+        "CREATE INDEX IF NOT EXISTS idx_adaptive_baseline_status ON adaptive_baseline_samples(status, dominant_metric);";
 
     if (sqlite3_exec(db_, processIndexSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -348,7 +380,8 @@ bool MetricsStorage::EnsureSchema() {
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(8, 'heal_plans', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(9, 'heal_verifications', strftime('%s','now'));"
         "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(10, 'safety_policy_evaluations', strftime('%s','now'));"
-        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(11, 'runtime_health_samples', strftime('%s','now'));";
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(11, 'runtime_health_samples', strftime('%s','now'));"
+        "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES(12, 'adaptive_baseline_samples', strftime('%s','now'));";
 
     if (sqlite3_exec(db_, migrationsSql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         if (errMsg) sqlite3_free(errMsg);
@@ -737,6 +770,62 @@ bool MetricsStorage::LogRuntimeHealth(const RuntimeHealthSample& sample) {
         const long long cutoff = sample.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
         sqlite3_stmt* retentionStmt = nullptr;
         if (sqlite3_prepare_v2(db_, "DELETE FROM runtime_health_samples WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
+            ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
+            sqlite3_finalize(retentionStmt);
+        }
+    }
+
+    return ok;
+}
+bool MetricsStorage::LogAdaptiveBaseline(const AdaptiveBaselineResult& baseline) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    const char* insertSql =
+        "INSERT OR REPLACE INTO adaptive_baseline_samples("
+        "time, status, summary, dominant_metric, sample_count, ready, confidence, anomaly_score, risk_hint, risk_adjustment, "
+        "cpu_mean, memory_mean, disk_free_mean, network_mean, process_count_mean, top_cpu_mean, top_memory_mean, "
+        "cpu_deviation, memory_deviation, disk_deviation, network_deviation, process_deviation, top_cpu_deviation, top_memory_deviation"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24);";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(baseline.timestamp));
+    sqlite3_bind_text(stmt, 2, baseline.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, baseline.summary.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, baseline.dominantMetric.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 5, baseline.sampleCount);
+    sqlite3_bind_int(stmt, 6, baseline.ready ? 1 : 0);
+    sqlite3_bind_double(stmt, 7, baseline.confidence);
+    sqlite3_bind_double(stmt, 8, baseline.anomalyScore);
+    sqlite3_bind_double(stmt, 9, baseline.riskHint);
+    sqlite3_bind_double(stmt, 10, baseline.riskAdjustment);
+    sqlite3_bind_double(stmt, 11, baseline.cpuMean);
+    sqlite3_bind_double(stmt, 12, baseline.memoryMean);
+    sqlite3_bind_double(stmt, 13, baseline.diskFreeMean);
+    sqlite3_bind_double(stmt, 14, baseline.networkMean);
+    sqlite3_bind_double(stmt, 15, baseline.processCountMean);
+    sqlite3_bind_double(stmt, 16, baseline.topCpuMean);
+    sqlite3_bind_double(stmt, 17, baseline.topMemoryMean);
+    sqlite3_bind_double(stmt, 18, baseline.cpuDeviation);
+    sqlite3_bind_double(stmt, 19, baseline.memoryDeviation);
+    sqlite3_bind_double(stmt, 20, baseline.diskDeviation);
+    sqlite3_bind_double(stmt, 21, baseline.networkDeviation);
+    sqlite3_bind_double(stmt, 22, baseline.processDeviation);
+    sqlite3_bind_double(stmt, 23, baseline.topCpuDeviation);
+    sqlite3_bind_double(stmt, 24, baseline.topMemoryDeviation);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+
+    if (ok) {
+        const long long cutoff = baseline.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS;
+        sqlite3_stmt* retentionStmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM adaptive_baseline_samples WHERE time < ?1;", -1, &retentionStmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(retentionStmt, 1, static_cast<sqlite3_int64>(cutoff));
             ok = sqlite3_step(retentionStmt) == SQLITE_DONE;
             sqlite3_finalize(retentionStmt);

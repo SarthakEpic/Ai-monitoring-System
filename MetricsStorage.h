@@ -4,6 +4,7 @@
 #include <vector>
 #include <mutex>
 
+#include "AdaptiveBaseline.h"
 #include "AutoHealPlanner.h"
 #include "DecisionEngine.h"
 #include "HealingVerifier.h"
@@ -49,6 +50,7 @@ public:
         const SafetyPolicyResult& policyResult
     );
     bool LogRuntimeHealth(const RuntimeHealthSample& sample);
+    bool LogAdaptiveBaseline(const AdaptiveBaselineResult& baseline);
 
 private:
     bool EnsureSchema();

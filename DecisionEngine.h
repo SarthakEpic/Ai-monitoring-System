@@ -19,6 +19,11 @@ struct DecisionContext {
     std::deque<double> diskHistory;
     std::deque<double> netHistory;
     std::deque<double> processHistory;
+    double baselineAnomalyScore = 0.0;
+    double baselineRiskAdjustment = 0.0;
+    std::string baselineStatus = "WARMING_UP";
+    std::string baselineDominantMetric = "none";
+    bool baselineReady = false;
 };
 
 struct DecisionThresholds {

@@ -17,6 +17,7 @@
 #include <vector>
 #include <cctype>
 
+#include "AdaptiveBaseline.h"
 #include "AutoHealPlanner.h"
 #include "AppConfig.h"
 #include "DecisionEngine.h"
@@ -125,6 +126,7 @@ MetricsStorage g_storage;
 MetricsPipeline g_pipeline;
 DecisionEngine g_decisionEngine;
 AutoHealPlanner g_autoHealPlanner;
+AdaptiveBaselineEngine g_adaptiveBaseline;
 HealingVerifier g_healingVerifier;
 SafetyPolicyEngine g_safetyPolicyEngine;
 RuntimeHealthMonitor g_runtimeHealth;
@@ -132,6 +134,7 @@ HealPlan g_healPlan;
 HealVerification g_healVerification;
 SafetyPolicyResult g_safetyPolicyResult;
 RuntimeHealthSample g_runtimeHealthSample;
+AdaptiveBaselineResult g_adaptiveBaselineResult;
 atomic<bool> g_running = true;
 thread g_monitorThread;
 long long g_tick = 0;
@@ -974,7 +977,8 @@ void DrawRuntimePanel(HDC hdc, const RECT& rc,
                       int modelCacheTtlTicks,
                       size_t pendingWrites,
                       bool storageReady,
-                      const RuntimeHealthSample& runtimeHealth) {
+                      const RuntimeHealthSample& runtimeHealth,
+                      const AdaptiveBaselineResult& baseline) {
     const COLORREF healthColor = storageReady ? RuntimeHealthAccentColor(runtimeHealth.status) : RGB(231, 76, 60);
     DrawSectionPanel(hdc, rc, "Runtime & Storage", healthColor);
     DrawTextAt(hdc, rc.left + 14, rc.top + 50, "Health", RGB(160, 170, 185), gFontSmall);
@@ -1160,6 +1164,8 @@ void MonitorThread(HWND hwnd) {
     int aiAlertClearStreak = max(1, g_config.GetInt("AI_ALERT_CLEAR_STREAK", DEFAULT_AI_ALERT_CLEAR_STREAK));
     int modelCacheTtlTicks = max(aiPredictIntervalTicks, g_config.GetInt("AI_MODEL_CACHE_TTL_TICKS", defaultModelCacheTtlTicks));
     int runtimeHealthLogIntervalTicks = max(5, g_config.GetInt("RUNTIME_HEALTH_LOG_INTERVAL_TICKS", 30));
+    int baselineMinSamples = max(10, g_config.GetInt("BASELINE_MIN_SAMPLES", 30));
+    double baselineSensitivity = ClampDouble(g_config.GetDouble("BASELINE_SENSITIVITY", 1.6), 0.6, 3.0);
     DecisionThresholds decisionThresholds;
     decisionThresholds.cpuThreshold = cpuTh;
     decisionThresholds.memThreshold = memTh;
@@ -1250,6 +1256,7 @@ void MonitorThread(HWND hwnd) {
         }
 
         g_pipeline.Enqueue(snapshot);
+        AdaptiveBaselineResult baselineResult = g_adaptiveBaseline.EvaluateAndUpdate(snapshot, baselineMinSamples, baselineSensitivity);
         WriteRuntimeFeaturesJson(runtimeFeaturesPath, cpuCopy, memCopy, diskCopy, netCopy, processCopy, topCpuCopy, topMemCopy, cpuTh, memTh, diskTh);
 
         ModelPrediction modelPrediction;
@@ -1378,6 +1385,11 @@ void MonitorThread(HWND hwnd) {
         decisionContext.diskHistory = diskCopy;
         decisionContext.netHistory = netCopy;
         decisionContext.processHistory = processCopy;
+        decisionContext.baselineAnomalyScore = baselineResult.anomalyScore;
+        decisionContext.baselineRiskAdjustment = baselineResult.riskAdjustment;
+        decisionContext.baselineStatus = baselineResult.status;
+        decisionContext.baselineDominantMetric = baselineResult.dominantMetric;
+        decisionContext.baselineReady = baselineResult.ready;
         decisionResult = g_decisionEngine.Evaluate(
             snapshot,
             currentAiProb,
@@ -1415,6 +1427,7 @@ void MonitorThread(HWND hwnd) {
             g_healPlan = healPlan;
             g_healVerification = healVerification;
             g_safetyPolicyResult = policyResult;
+            g_adaptiveBaselineResult = baselineResult;
 
             if (decisionResult.level == RiskLevel::Critical) {
                 ++highRiskStreak;
@@ -1491,6 +1504,15 @@ void MonitorThread(HWND hwnd) {
             });
         }
 
+        const bool adaptiveBaselineOk = g_storage.LogAdaptiveBaseline(baselineResult);
+        g_runtimeHealth.RecordStorageWrite("adaptive_baseline", adaptiveBaselineOk);
+        if (!adaptiveBaselineOk && (g_tick % 30 == 0)) {
+            AppendRuntimeLog("adaptive_baseline_write_failed", {
+                {"status", baselineResult.status},
+                {"dominant_metric", baselineResult.dominantMetric},
+                {"anomaly", to_string(static_cast<int>(baselineResult.anomalyScore))},
+            });
+        }
         if (alertLocal && !lastAlert) {
             g_runtimeHealth.RecordAlert();
             string msg =
@@ -1542,6 +1564,9 @@ void MonitorThread(HWND hwnd) {
                 {"policy_reason_code", policyResult.reasonCode},
                 {"policy_score", to_string(static_cast<int>(policyResult.policyScore))},
                 {"policy_execution_eligible", policyResult.executionEligible ? "1" : "0"},
+                {"baseline_status", baselineResult.status},
+                {"baseline_anomaly", to_string(static_cast<int>(baselineResult.anomalyScore))},
+                {"baseline_metric", baselineResult.dominantMetric},
                 {"user_state", snapshot.intent.userState},
                 {"foreground_process", snapshot.intent.foregroundProcess},
                 {"app_kind", snapshot.intent.appKind},
@@ -1637,6 +1662,9 @@ void MonitorThread(HWND hwnd) {
                 {"policy_reason_code", policyResult.reasonCode},
                 {"policy_score", to_string(static_cast<int>(policyResult.policyScore))},
                 {"policy_execution_eligible", policyResult.executionEligible ? "1" : "0"},
+                {"baseline_status", baselineResult.status},
+                {"baseline_anomaly", to_string(static_cast<int>(baselineResult.anomalyScore))},
+                {"baseline_metric", baselineResult.dominantMetric},
                 {"model_readiness", g_modelReadiness},
                 {"risk", to_string(static_cast<int>(decisionResult.riskScore))},
                 {"ai_probability", to_string(static_cast<int>(currentAiProb))},
@@ -1704,6 +1732,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         HealVerification healVerification;
         SafetyPolicyResult policyResult;
         RuntimeHealthSample runtimeHealth;
+        AdaptiveBaselineResult baseline;
         int modelFeatureCount = 0;
         int cooldownRemainingSeconds = 0;
         int candidateCount = 0;
@@ -1781,6 +1810,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             healVerification = g_healVerification;
             policyResult = g_safetyPolicyResult;
             runtimeHealth = g_runtimeHealthSample;
+            baseline = g_adaptiveBaselineResult;
             decisionSummary = g_decisionSummary;
             decisionLevel = g_decisionLevel;
             cpuHist = g_cpuHist;
@@ -1832,6 +1862,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawTextAt(memDC, 18, 838, "VRFY  " + ShortenText(ToUpperAscii(ToDisplayToken(healVerification.status)), 16), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 862, "POL   " + ShortenText(ToUpperAscii(ToDisplayToken(policyResult.levelName)), 16), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 886, "HLTH  " + ShortenText(ToUpperAscii(ToDisplayToken(runtimeHealth.status)), 16), RuntimeHealthAccentColor(runtimeHealth.status), gFontSmall);
+        DrawTextAt(memDC, 18, 910, "BASE  " + ShortenText(ToUpperAscii(ToDisplayToken(baseline.status)), 16), RGB(180, 220, 255), gFontSmall);
 
         int mainX = sidebarW + pad;
         int mainW = client.right - mainX - pad;
@@ -1883,7 +1914,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DrawGraph(memDC, graphRc, cpuHist, memHist, diskHist);
             DrawReliabilityPanel(memDC, reliabilityRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
             DrawDecisionPanel(memDC, decisionRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
-            DrawRuntimePanel(memDC, runtimeRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth);
+            DrawRuntimePanel(memDC, runtimeRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
             DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
             DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
         } else if (g_dashboardView == DashboardView::Reliability) {
@@ -1894,11 +1925,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DrawPlaceholderWidePanel(memDC, decisionRc, "Model Contract", "Contract ai_reliability_v2", "50 features: resources, trends, spikes, recovery");
             DrawThresholdPanel(memDC, runtimeRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
             DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
-            DrawRuntimePanel(memDC, thresholdRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth);
+            DrawRuntimePanel(memDC, thresholdRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
         } else if (g_dashboardView == DashboardView::Runtime) {
             RECT runtimeWide{ mainX, middleTop, mainX + (mainW / 2) - gap, middleTop + middleH };
             RECT thresholdWide{ runtimeWide.right + gap, middleTop, client.right - pad, middleTop + middleH };
-            DrawRuntimePanel(memDC, runtimeWide, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth);
+            DrawRuntimePanel(memDC, runtimeWide, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
             DrawThresholdPanel(memDC, thresholdWide, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
             DrawGraph(memDC, decisionRc, cpuHist, memHist, diskHist);
             DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
@@ -1911,7 +1942,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
             DrawPlaceholderWidePanel(memDC, decisionRc, "Safety Policy", "Auto-heal execution is disabled", "Future healing needs allowlist, cooldown, confidence, and rollback checks");
             DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
-            DrawRuntimePanel(memDC, healRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth);
+            DrawRuntimePanel(memDC, healRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
             DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
         }
 

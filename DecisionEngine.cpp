@@ -310,6 +310,9 @@ DecisionResult DecisionEngine::Evaluate(
         thresholds.diskThreshold
     );
     result.anomalyScore = ComputeAnomalyScore(snapshot, context);
+    if (context.baselineReady) {
+        result.anomalyScore = ClampPercent(max(result.anomalyScore, context.baselineAnomalyScore * 0.85));
+    }
 
     const double confidenceFactor = ClampPercent(aiConfidence) / 100.0;
     double aiWeight = 0.20;
@@ -320,7 +323,7 @@ DecisionResult DecisionEngine::Evaluate(
     const double pressureWeight = max(0.0, 1.0 - aiWeight - anomalyWeight);
 
     result.riskScore =
-        ClampPercent((aiProbability * aiWeight) + (result.anomalyScore * anomalyWeight) + (result.pressureScore * pressureWeight));
+        ClampPercent((aiProbability * aiWeight) + (result.anomalyScore * anomalyWeight) + (result.pressureScore * pressureWeight) + context.baselineRiskAdjustment);
 
     const bool emergency =
         snapshot.cpuUsage >= 97.0 ||
@@ -339,6 +342,9 @@ DecisionResult DecisionEngine::Evaluate(
     result.rootCause = rootCause.name;
     result.rootCauseDetail = rootCause.detail;
     result.reason = (!aiReason.empty() && aiReason != "N/A") ? aiReason : rootCause.detail;
+    if (context.baselineReady && context.baselineAnomalyScore >= 45.0) {
+        result.rootCauseDetail += "; baseline " + context.baselineDominantMetric + " drift " + to_string(static_cast<int>(context.baselineAnomalyScore)) + "%";
+    }
 
     const vector<string> allowlist = SplitCsv(policy.allowlistCsv);
     const vector<string> denylist = SplitCsv(policy.denylistCsv);

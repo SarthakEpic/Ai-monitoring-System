@@ -65,9 +65,10 @@ Before enabling real healing:
 - Persist heal verification status, outcome label, estimated before/after metrics, risk delta, and evidence.
 - Persist safety policy level, reason code, policy score, target guardrails, and execution eligibility.
 - Persist runtime health status, prediction path, model success rate, fallback rate, SQLite success rate, and prediction latency.
+- Persist adaptive baseline status, dominant drift metric, learned means, anomaly score, confidence, and risk adjustment.
 - Track SQLite write failures through Stage 7 runtime health samples.
 - Track Python service, one-shot fallback, cache usage, and future ONNX inference failures.
-- Display model readiness, feature count, and training timestamp.
+- Display model readiness, feature count, training timestamp, runtime health, and adaptive baseline status.
 
 ## 5. Release Gates
 
@@ -89,6 +90,6 @@ Before enabling real healing:
 
 ## Current Honest Status
 
-PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates, dry-run healing plans, simulated before/after verification, final policy guardrails, and runtime health evidence.
+PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates, dry-run healing plans, simulated before/after verification, final policy guardrails, runtime health evidence, and per-device adaptive baselines.
 
 It is not yet production-ready for autonomous healing. The next production milestone is improving CRITICAL and RECOVERY reliability using scenario-labeled data.

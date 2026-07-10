@@ -9,6 +9,7 @@ set_source_files_properties(sqlite3.c PROPERTIES LANGUAGE C)
 
 add_executable(PredictiveAutoHeal
     main.cpp
+    AdaptiveBaseline.cpp
     AppConfig.cpp
     AutoHealPlanner.cpp
     DecisionEngine.cpp
@@ -44,6 +45,7 @@ add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
         "${CMAKE_SOURCE_DIR}/heal_verification_summary.py"
         "${CMAKE_SOURCE_DIR}/safety_policy_summary.py"
         "${CMAKE_SOURCE_DIR}/runtime_health_summary.py"
+        "${CMAKE_SOURCE_DIR}/adaptive_baseline_summary.py"
         "${CMAKE_SOURCE_DIR}/training_label.txt"
         "${CMAKE_SOURCE_DIR}/PROCESS_GENOME.md"
         "${CMAKE_SOURCE_DIR}/USER_INTENT.md"
@@ -52,6 +54,7 @@ add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
         "${CMAKE_SOURCE_DIR}/HEALING_VERIFIER.md"
         "${CMAKE_SOURCE_DIR}/SAFETY_POLICY.md"
         "${CMAKE_SOURCE_DIR}/RUNTIME_OBSERVABILITY.md"
+        "${CMAKE_SOURCE_DIR}/ADAPTIVE_BASELINE.md"
         "${CMAKE_SOURCE_DIR}/DATA_COLLECTION.md"
         "${CMAKE_SOURCE_DIR}/requirements.txt"
         "$<TARGET_FILE_DIR:PredictiveAutoHeal>"
