@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "PredictiveAutoHeal Cooperative Tabs",
+  "version": "1.0.0",
+  "description": "Safely discards only approved inactive tabs and restores them on request.",
+  "permissions": ["tabs", "storage", "nativeMessaging"],
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "action": { "default_title": "PredictiveAutoHeal Tabs" }
+}

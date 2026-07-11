@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PredictiveAutoHeal benchmark run",
+  "type": "object",
+  "required": ["schema_version", "run_id", "device_id", "scenario", "variant", "run_type", "iteration", "order_index", "metrics", "optimizer_overhead", "safety", "environment"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "device_id": { "type": "string", "minLength": 1 },
+    "scenario": { "enum": ["student_browser", "coding", "video_meeting", "gaming", "post_boot"] },
+    "variant": { "enum": ["windows_baseline", "predictive_autoheal", "microsoft_pc_manager", "process_lasso", "razer_cortex"] },
+    "run_type": { "enum": ["cold", "warm"] },
+    "iteration": { "type": "integer", "minimum": 0 },
+    "order_index": { "type": "integer", "minimum": 0 },
+    "metrics": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["unit", "direction", "samples"],
+        "properties": {
+          "unit": { "type": "string", "minLength": 1 },
+          "direction": { "enum": ["lower", "higher"] },
+          "samples": { "type": "array", "minItems": 1, "items": { "type": "number" } }
+        },
+        "additionalProperties": false
+      }
+    },
+    "optimizer_overhead": {
+      "type": "object",
+      "required": ["cpu_percent_samples", "memory_mb_samples", "disk_write_kbps_samples"],
+      "properties": {
+        "cpu_percent_samples": { "type": "array", "items": { "type": "number" } },
+        "memory_mb_samples": { "type": "array", "items": { "type": "number" } },
+        "disk_write_kbps_samples": { "type": "array", "items": { "type": "number" } }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "required": ["crashes", "app_reloads", "user_apps_touched", "rollback_failures"],
+      "properties": {
+        "crashes": { "type": "integer", "minimum": 0 },
+        "app_reloads": { "type": "integer", "minimum": 0 },
+        "user_apps_touched": { "type": "integer", "minimum": 0 },
+        "rollback_failures": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "environment": { "type": "object" },
+    "notes": { "type": "string" }
+  },
+  "additionalProperties": false
+}

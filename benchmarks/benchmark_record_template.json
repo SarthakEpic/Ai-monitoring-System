@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "run_id": "REPLACE_FROM_PLAN",
+  "device_id": "ANONYMIZED_DEVICE_ID",
+  "scenario": "student_browser",
+  "variant": "windows_baseline",
+  "run_type": "warm",
+  "iteration": 1,
+  "order_index": 1,
+  "metrics": {
+    "app_switch_latency_ms": {
+      "unit": "ms",
+      "direction": "lower",
+      "samples": [0.0]
+    }
+  },
+  "optimizer_overhead": {
+    "cpu_percent_samples": [],
+    "memory_mb_samples": [],
+    "disk_write_kbps_samples": []
+  },
+  "safety": {
+    "crashes": 0,
+    "app_reloads": 0,
+    "user_apps_touched": 0,
+    "rollback_failures": 0
+  },
+  "environment": {
+    "os_build": "REPLACE",
+    "power_mode": "REPLACE",
+    "thermal_state": "REPLACE",
+    "application_versions": {}
+  },
+  "notes": "Template only; zero is not measured evidence."
+}

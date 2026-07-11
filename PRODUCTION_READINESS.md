@@ -94,6 +94,11 @@ Before enabling real healing:
 - Include model report snapshot.
 - Clearly label unfinished features as roadmap items.
 
+## Intent-Aware Program Update
+
+Native reversible actuators, transactional rollback, measured outcome verification, QoE/criticality intelligence, shadow impact learning, constrained online policy, cooperative integrations, and the benchmark laboratory are implemented and covered by local tests. All real execution and cooperative integrations remain disabled by default.
+
+This does not make autonomous optimization production-ready. Policy promotion requires measured offline evidence, and public performance claims require the hardware matrix, long-duration safety campaign, competitor comparison, and independent reproduction defined in `EXPERIMENTAL_PROTOCOL.md`.
 ## Current Honest Status
 
 PredictiveAutoHeal is portfolio-ready as a predictive monitoring project with conservative safety gates, dry-run healing plans, simulated before/after verification, final policy guardrails, runtime health evidence, per-device adaptive baselines, low-end autopilot recommendations, tray-agent operation, and benchmark estimates.

@@ -59,7 +59,7 @@ BenchmarkProofResult BenchmarkProofEngine::Build(
 
     if (result.actionsRecommended == 0) {
         result.status = "COLLECTING";
-        result.summary = "No safe optimization proof yet; collect pressure samples.";
+        result.summary = "No impact estimate yet; collect pressure samples.";
     } else if (result.userAppsTouched == 0) {
         result.status = "PROOF_READY";
         ostringstream oss;
@@ -70,7 +70,7 @@ BenchmarkProofResult BenchmarkProofEngine::Build(
         result.summary = oss.str();
     } else {
         result.status = "REVIEW_REQUIRED";
-        result.summary = "Proof has candidate actions, but at least one visible user app needs review.";
+        result.summary = "Simulation has candidates, but a visible user app requires review.";
     }
 
     return result;

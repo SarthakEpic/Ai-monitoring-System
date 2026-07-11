@@ -163,6 +163,24 @@ CauseSignal DetectRootCause(
         processPressure
     });
 
+    if (context.qoeAvailable) {
+        signals.push_back({
+            "paging_pressure",
+            "System page reads " + to_string(static_cast<int>(context.systemPageReadsPerSecond)) + "/s during " + context.workloadPhase,
+            ClampPercent((context.systemPageReadsPerSecond / 250.0) * 100.0)
+        });
+        signals.push_back({
+            "disk_contention",
+            "Disk queue " + to_string(context.diskQueueLength) + " during " + context.workloadPhase,
+            ClampPercent((context.diskQueueLength / 4.0) * 100.0)
+        });
+        signals.push_back({
+            "foreground_latency",
+            "Foreground response " + to_string(context.inputResponseMs) + " ms during " + context.workloadPhase,
+            ClampPercent((context.inputResponseMs / 100.0) * 100.0)
+        });
+    }
+
     const double topProcessPressure = ClampPercent(
         (snapshot.topProcess.cpuPercent * 0.9) +
         min(35.0, snapshot.topProcess.privateMemoryMB / 20.0) +
@@ -233,7 +251,8 @@ OptimizationCandidate SelectOptimizationCandidate(
     const SystemSnapshot& snapshot,
     const vector<string>& allowlist,
     const vector<string>& denylist,
-    int& candidateCount
+    int& candidateCount,
+    const DecisionContext& context
 ) {
     OptimizationCandidate best;
     bool hasBest = false;
@@ -241,7 +260,13 @@ OptimizationCandidate SelectOptimizationCandidate(
 
     for (const auto& process : snapshot.processGenome) {
         OptimizationCandidate candidate = ToCandidate(process, allowlist, denylist);
-        if (candidate.deniedByPolicy || candidate.protectedByUserIntent || IsPolicyProtected(process)) {
+        const bool criticalPathProtected =
+            find(
+                context.protectedCriticalPathPids.begin(),
+                context.protectedCriticalPathPids.end(),
+                process.pid
+            ) != context.protectedCriticalPathPids.end();
+        if (candidate.deniedByPolicy || candidate.protectedByUserIntent || criticalPathProtected || IsPolicyProtected(process)) {
             continue;
         }
         if (candidate.safetyScore < 35.0 && process.safety != "CANDIDATE") {
@@ -277,6 +302,8 @@ string BuildSummary(const DecisionResult& result) {
 string ActionForCause(const string& rootCause, const OptimizationCandidate& candidate) {
     if (rootCause == "disk") return "review_disk_cleanup";
     if (rootCause == "network") return "review_network_activity";
+    if (rootCause == "paging_pressure") return candidate.pid ? "dry_run_lower_memory_priority" : "increase_observation";
+    if (rootCause == "disk_contention" || rootCause == "foreground_latency") return candidate.pid ? "dry_run_lower_priority" : "increase_observation";
     if (candidate.pid == 0) return "increase_observation";
     if (rootCause == "cpu") return "dry_run_lower_priority";
     if (rootCause == "memory") return "dry_run_memory_trim";
@@ -322,8 +349,22 @@ DecisionResult DecisionEngine::Evaluate(
     const double anomalyWeight = 0.25;
     const double pressureWeight = max(0.0, 1.0 - aiWeight - anomalyWeight);
 
+    double qoeRiskAdjustment = 0.0;
+    if (context.qoeAvailable) {
+        qoeRiskAdjustment += min(7.0, max(0.0, context.inputResponseMs - 25.0) / 10.0);
+        qoeRiskAdjustment += min(5.0, context.systemPageReadsPerSecond / 100.0);
+        qoeRiskAdjustment += min(5.0, context.diskQueueLength * 1.5);
+        qoeRiskAdjustment += min(3.0, context.droppedFramesPerSecond);
+    }
+
     result.riskScore =
-        ClampPercent((aiProbability * aiWeight) + (result.anomalyScore * anomalyWeight) + (result.pressureScore * pressureWeight) + context.baselineRiskAdjustment);
+        ClampPercent(
+            (aiProbability * aiWeight) +
+            (result.anomalyScore * anomalyWeight) +
+            (result.pressureScore * pressureWeight) +
+            context.baselineRiskAdjustment +
+            qoeRiskAdjustment
+        );
 
     const bool emergency =
         snapshot.cpuUsage >= 97.0 ||
@@ -348,7 +389,7 @@ DecisionResult DecisionEngine::Evaluate(
 
     const vector<string> allowlist = SplitCsv(policy.allowlistCsv);
     const vector<string> denylist = SplitCsv(policy.denylistCsv);
-    result.candidate = SelectOptimizationCandidate(snapshot, allowlist, denylist, result.candidateCount);
+    result.candidate = SelectOptimizationCandidate(snapshot, allowlist, denylist, result.candidateCount, context);
     result.candidateSafetyScore = result.candidate.safetyScore;
     result.expectedGainMB = result.candidate.expectedGainMB;
     result.actionConfidence = ClampPercent((aiConfidence * 0.45) + (result.candidate.safetyScore * 0.35) + (result.riskScore * 0.20));

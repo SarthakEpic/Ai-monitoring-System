@@ -24,6 +24,13 @@ struct DecisionContext {
     std::string baselineStatus = "WARMING_UP";
     std::string baselineDominantMetric = "none";
     bool baselineReady = false;
+    bool qoeAvailable = false;
+    std::string workloadPhase = "UNKNOWN";
+    double inputResponseMs = 0.0;
+    double systemPageReadsPerSecond = 0.0;
+    double diskQueueLength = 0.0;
+    double droppedFramesPerSecond = 0.0;
+    std::vector<unsigned long> protectedCriticalPathPids;
 };
 
 struct DecisionThresholds {

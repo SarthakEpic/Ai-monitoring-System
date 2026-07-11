@@ -6,7 +6,7 @@ on:
 
 jobs:
   python-tests:
-    name: Python model contract
+    name: Python contracts and benchmark lab
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,4 +26,6 @@ jobs:
       - name: Configure
         run: cmake -S . -B build
       - name: Build
-        run: cmake --build build --config Debug
+        run: cmake --build build --config Debug -- /m:1
+      - name: Run native safety and integration tests
+        run: ctest --test-dir build -C Debug --output-on-failure

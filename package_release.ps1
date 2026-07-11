@@ -29,6 +29,7 @@ New-Item -ItemType Directory -Path $target | Out-Null
 
 $runtimeFiles = @(
     "build\$Configuration\PredictiveAutoHeal.exe",
+    "build\$Configuration\PredictiveAutoHealBrowserHost.exe",
     "config.txt",
     "predict_model.py",
     "inference_service.py",
@@ -46,6 +47,8 @@ $runtimeFiles = @(
     "adaptive_baseline_summary.py",
     "autopilot_summary.py",
     "install_startup.ps1",
+    "install_browser_integration.ps1",
+    "benchmark_lab.py",
     "training_label.txt",
     "PROCESS_GENOME.md",
     "USER_INTENT.md",
@@ -58,6 +61,13 @@ $runtimeFiles = @(
     "LOW_END_AUTOPILOT.md",
     "BACKGROUND_AGENT.md",
     "BENCHMARK_PROOF.md",
+    "BENCHMARK_LAB.md",
+    "ARCHITECTURE_V2.md",
+    "THREAT_MODEL.md",
+    "EXPERIMENTAL_PROTOCOL.md",
+    "FAILURE_CASES.md",
+    "RESEARCH_PAPER_DRAFT.md",
+    "PROJECT_GOAL_AND_PROGRESS.md",
     "DATA_COLLECTION.md",
     "PRODUCTION_READINESS.md",
     "README.md",
@@ -65,6 +75,15 @@ $runtimeFiles = @(
     "requirements.txt"
 )
 
+$integrationTarget = Join-Path $target "integrations"
+if (Test-Path "integrations") {
+    Copy-Item "integrations" -Destination $integrationTarget -Recurse -Force
+}
+$benchmarkTarget = Join-Path $target "benchmarks"
+New-Item -ItemType Directory -Path $benchmarkTarget -Force | Out-Null
+foreach ($file in @("benchmarks\raw_run.schema.json", "benchmarks\benchmark_record_template.json")) {
+    if (Test-Path $file) { Copy-Item $file -Destination $benchmarkTarget -Force }
+}
 foreach ($file in $runtimeFiles) {
     if (Test-Path $file) {
         Copy-Item $file -Destination $target -Force

@@ -11,7 +11,7 @@ struct BenchmarkProofResult {
     long long timestamp = 0;
     std::string status = "COLLECTING";
     std::string mode = "ESTIMATE";
-    std::string summary = "Collecting proof samples";
+    std::string summary = "Collecting simulation inputs";
     double beforeCpu = 0.0;
     double beforeMemory = 0.0;
     double beforeDiskFree = 0.0;

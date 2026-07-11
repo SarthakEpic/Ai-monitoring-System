@@ -18,7 +18,7 @@ The current version focuses on safe predictive monitoring: it detects resource p
 - Adaptive Baseline Engine that learns per-device normal CPU, memory, disk, network, process, and top-process behavior
 - Low-End PC Autopilot that protects foreground work and ranks reversible background optimizations
 - Background Agent with tray control, start-hidden mode, close-to-tray, startup registration, and safe Quick Restore reset
-- Proof / Benchmark Mode with transparent before/after estimates, recovered resources, confidence, and user-app impact
+- Impact Simulation Mode with clearly labeled before/after estimates, recovered resources, confidence, and user-app impact
 - SQLite time-series telemetry storage
 - SQLite process intelligence history in `process_samples`
 - SQLite user intent history in `user_intent_samples`
@@ -44,6 +44,31 @@ The current version focuses on safe predictive monitoring: it detects resource p
 - Python contract tests for runtime inference compatibility
 - Portable Windows runtime bundle
 
+## Intent-Aware Orchestrator
+
+The project has moved beyond recommendation-only monitoring into a safety-locked resource-orchestration architecture:
+
+- Native reversible priority, EcoQoS, and memory-priority actuators with process-identity checks and SQLite recovery journal.
+- Actual pre/post action measurements with helpful, neutral, harmful, and rolled-back outcomes.
+- Foreground QoE telemetry, workload phases, and a Performance Criticality Graph that protects active dependencies.
+- Per-action contextual impact learning with uncertainty, shadow mode, a no-intervention baseline, and persisted offline promotion evidence.
+- Safe online policy with independent execution switches, allowlist/approval, lower-confidence gate, cooldown, hourly budget, kill-switch file, Quick Restore, and startup recovery.
+- Optional cooperative browser, current-user BITS, workload-protection, and predictive-prefetch integrations.
+- Reproducible benchmark planning and claim-gated reporting with median/p95/p99, bootstrap confidence intervals, overhead, safety failures, and negative results.
+
+Real execution remains disabled by default. Enabling configuration flags alone is insufficient: a policy must also have persisted successful offline-evaluation evidence and pass every deterministic runtime gate.
+
+No real-world speedup claim has been established yet. Synthetic benchmark records are rejected from qualified claims, and multi-device/independent validation remains pending.
+
+Key engineering documents:
+
+- [Project goal and progress](PROJECT_GOAL_AND_PROGRESS.md)
+- [Architecture V2](ARCHITECTURE_V2.md)
+- [Threat model](THREAT_MODEL.md)
+- [Experimental protocol](EXPERIMENTAL_PROTOCOL.md)
+- [Benchmark laboratory](BENCHMARK_LAB.md)
+- [Failure-case register](FAILURE_CASES.md)
+- [Research-paper draft](RESEARCH_PAPER_DRAFT.md)
 ## Architecture
 
 ```text
@@ -115,7 +140,7 @@ Dashboard + Alerts + Auto-heal readiness
 | Adaptive Baseline Engine | Working phase 8 |
 | Low-End PC Autopilot | Working phase 9, recommendation-only |
 | Background Agent / tray | Working phase 10 |
-| Proof / Benchmark Mode | Working phase 11, estimated results |
+| Impact Simulation Mode | Working, estimates only; measured outcomes use the action verification path |
 | AI risk prediction | Working prototype |
 | Model confidence/reasons | Working prototype |
 | Persistent inference service | Working |
@@ -154,8 +179,8 @@ PredictiveAutoHeal/
 ├── AdaptiveBaseline.*        # Per-device baseline learning and drift scoring
 ├── LowEndAutopilot.*         # Safe low-end process ranking and reversible recommendations
 ├── BackgroundAgent.*         # Tray/background runtime state contract
-├── BenchmarkProof.*          # Transparent before/after optimization estimates
-├── StageControlCenterUI.*    # Autopilot, agent, and proof dashboard panels
+├── BenchmarkProof.*          # Clearly labeled impact simulation estimates
+├── StageControlCenterUI.*    # Autopilot, agent, and impact-simulation dashboard panels
 ├── AppConfig.*               # Config file parsing
 ├── train_model.py            # Model training and reliability report
 ├── predict_model.py          # Runtime prediction CLI

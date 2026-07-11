@@ -22,13 +22,18 @@
 #include "AdaptiveBaseline.h"
 #include "AutoHealPlanner.h"
 #include "BackgroundAgent.h"
+#include "BrowserIntegrationBridge.h"
 #include "BenchmarkProof.h"
+#include "CooperativeIntegrations.h"
 #include "AppConfig.h"
 #include "DecisionEngine.h"
 #include "HealingVerifier.h"
+#include "ImpactLearning.h"
 #include "LowEndAutopilot.h"
 #include "MetricsPipeline.h"
+#include "PerformanceIntelligence.h"
 #include "RuntimeHealth.h"
+#include "SafeOnlinePolicy.h"
 #include "SafetyPolicy.h"
 #include "StageControlCenterUI.h"
 #include "MetricsStorage.h"
@@ -218,6 +223,25 @@ string ToUpperAscii(string text) {
     return text;
 }
 
+vector<string> SplitCsvValues(const string& csv) {
+    vector<string> values;
+    string token;
+    istringstream stream(csv);
+    while (getline(stream, token, ',')) {
+        const size_t start = token.find_first_not_of(" \t\r\n");
+        const size_t end = token.find_last_not_of(" \t\r\n");
+        if (start != string::npos) values.push_back(token.substr(start, end - start + 1));
+    }
+    return values;
+}
+
+bool ContainsProcessNameInsensitive(const vector<string>& names, const string& processName) {
+    const string normalized = ToUpperAscii(fs::path(processName).filename().string());
+    for (const string& name : names) {
+        if (ToUpperAscii(fs::path(name).filename().string()) == normalized) return true;
+    }
+    return false;
+}
 string FormatModeLabel(const string& mode) {
     if (mode == "HIGH_PERFORMANCE") return "HIGH PERFORMANCE";
     if (mode == "BALANCED") return "BALANCED";
@@ -1126,7 +1150,10 @@ void DrawRuntimePanel(HDC hdc, const RECT& rc,
     DrawTextAt(hdc, rc.left + 14, rc.top + 78, "Mode", RGB(160, 170, 185), gFontSmall);
     DrawTextAt(hdc, rc.left + 100, rc.top + 78, FormatModeLabel(performanceMode), RGB(235, 240, 248), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 106, "Model", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 100, rc.top + 106, "every " + to_string(aiPredictIntervalTicks) + "s", RGB(235, 240, 248), gFontSmall);
+    DrawTextAt(hdc, rc.left + 100, rc.top + 106,
+               "every " + to_string(aiPredictIntervalTicks) + "s / cache " +
+                   to_string(modelCacheTtlTicks) + "s",
+               RGB(235, 240, 248), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 134, "SQLite", RGB(160, 170, 185), gFontSmall);
     DrawTextAt(hdc, rc.left + 100, rc.top + 134, storageReady ? "ACTIVE" : "OFFLINE", storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 162, "Queue", RGB(160, 170, 185), gFontSmall);
@@ -1144,10 +1171,14 @@ void DrawRuntimePanel(HDC hdc, const RECT& rc,
     }
 
     if ((rc.bottom - rc.top) >= 350) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 314, "Path", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 100, rc.top + 314, ShortenText(ToUpperAscii(ToDisplayToken(runtimeHealth.predictionPath)), 24), RGB(235, 240, 248), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 342, "Why", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 100, rc.top + 342, ShortenText(runtimeHealth.summary, 34), RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 302, "Baseline", RGB(160, 170, 185), gFontSmall);
+        DrawTextAt(hdc, rc.left + 100, rc.top + 302,
+                   ShortenText(ToUpperAscii(ToDisplayToken(baseline.status)), 24),
+                   baseline.ready ? RGB(120, 220, 160) : RGB(255, 210, 120), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 326, "Path", RGB(160, 170, 185), gFontSmall);
+        DrawTextAt(hdc, rc.left + 100, rc.top + 326, ShortenText(ToUpperAscii(ToDisplayToken(runtimeHealth.predictionPath)), 24), RGB(235, 240, 248), gFontSmall);
+        DrawTextAt(hdc, rc.left + 14, rc.top + 350, "Why", RGB(160, 170, 185), gFontSmall);
+        DrawTextAt(hdc, rc.left + 100, rc.top + 350, ShortenText(runtimeHealth.summary, 34), RGB(170, 180, 195), gFontSmall);
     }
 }
 
@@ -1166,6 +1197,7 @@ void DrawAutoHealPanel(HDC hdc, const RECT& rc,
                        const HealPlan& plan,
                        const HealVerification& verification,
                        const SafetyPolicyResult& policyResult) {
+    (void)snapshot;
     DrawSectionPanel(hdc, rc, "Auto-Heal Readiness", safeToHeal ? RGB(46, 204, 113) : RGB(241, 196, 15));
     RECT status{ rc.left + 14, rc.top + 48, rc.right - 14, rc.top + 88 };
     DrawRoundedPanel(hdc, status, safeToHeal ? RGB(25, 51, 44) : RGB(68, 50, 20), safeToHeal ? RGB(46, 204, 113) : RGB(241, 196, 15), 14);
@@ -1173,8 +1205,14 @@ void DrawAutoHealPanel(HDC hdc, const RECT& rc,
     DrawTextAt(hdc, rc.left + 14, rc.top + 112, "Action", RGB(160, 170, 185), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 138, ShortenText(ToUpperAscii(ToDisplayToken(recommendedAction)), 30), RGB(235, 240, 248), gFontSmall);
     DrawTextAt(hdc, rc.left + 14, rc.top + 164, "Target: " + ShortenText(actionTarget, 24), RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 190, "Gate: " + ShortenText(ToUpperAscii(ToDisplayToken(safetyGate)), 24), RGB(255, 210, 120), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 216, "Mode: " + string(dryRun ? "DRY RUN" : "EXECUTION"), dryRun ? RGB(255, 210, 120) : RGB(120, 220, 160), gFontSmall);
+    DrawTextAt(hdc, rc.left + 14, rc.top + 190,
+               "Gate: " + ShortenText(ToUpperAscii(ToDisplayToken(safetyGate)), 24) +
+                   "  Conf " + to_string(static_cast<int>(actionConfidence)) + "%",
+               RGB(255, 210, 120), gFontSmall);
+    DrawTextAt(hdc, rc.left + 14, rc.top + 216,
+               "Mode: " + string(dryRun ? "DRY RUN" : "EXECUTION") +
+                   " / " + ShortenText(blockedReason, 28),
+               dryRun ? RGB(255, 210, 120) : RGB(120, 220, 160), gFontSmall);
     if ((rc.bottom - rc.top) >= 230) {
         DrawTextAt(hdc, rc.left + 14, rc.top + 242, "Plan: " + ShortenText(ToUpperAscii(ToDisplayToken(plan.status)), 22), RGB(170, 180, 195), gFontSmall);
         DrawTextAt(hdc, rc.left + 14, rc.top + 268, "Ready " + to_string(static_cast<int>(plan.readinessScore)) + "%  Gain " + to_string(static_cast<int>(expectedGainMB)) + " MB", RGB(170, 180, 195), gFontSmall);
@@ -1246,6 +1284,7 @@ void DrawInsightPanel(HDC hdc, const RECT& rc,
                       int modelCacheTtlTicks,
                       size_t pendingWrites,
                       bool storageReady) {
+    (void)snapshot;
     COLORREF bg = (decisionLevel == RiskLevel::Normal) ? RGB(20, 26, 36) : LevelFillColor(decisionLevel);
     COLORREF border = (decisionLevel == RiskLevel::Normal) ? RGB(62, 76, 94) : LevelAccentColor(decisionLevel);
     DrawRoundedPanel(hdc, rc, bg, border, 24);
@@ -1290,6 +1329,53 @@ void DrawInsightPanel(HDC hdc, const RECT& rc,
 void MonitorThread(HWND hwnd) {
     WindowsMetricsCollector collector;
     if (!collector.Initialize()) return;
+    WorkloadPhaseDetector workloadDetector;
+    QoeTelemetryCollector qoeCollector;
+    PerformanceCriticalityEngine criticalityEngine;
+    WorkloadProtectionEngine workloadProtectionEngine;
+    IntegrationCapabilityDetector integrationCapabilityDetector;
+    const IntegrationCapabilities integrationCapabilities = integrationCapabilityDetector.Detect(GetExecutableDir());
+    CooperativeIntegrationJournal cooperativeJournal;
+    string cooperativeJournalError;
+    const bool cooperativeJournalReady = cooperativeJournal.Open((fs::path(GetExecutableDir()) / L"monitor.db").string(), cooperativeJournalError);
+    BrowserIntegrationBridge browserBridge(cooperativeJournalReady ? &cooperativeJournal : nullptr);
+    string browserBridgeError;
+    if (g_config.GetInt("BROWSER_COOP_ENABLED", 0) != 0) browserBridge.Start(browserBridgeError);
+    QoeTelemetryJournal qoeJournal;
+    string qoeInitializationError;
+    const bool qoeCollectorReady = qoeCollector.Initialize(qoeInitializationError);
+    string qoeJournalError;
+    const bool qoeJournalReady = qoeJournal.Open((fs::path(GetExecutableDir()) / L"monitor.db").string(), qoeJournalError);
+    WorkloadContextEncoder impactContextEncoder;
+    ContextualImpactModel impactModel;
+    ShadowContextualPolicy shadowImpactPolicy;
+    LearningJournal learningJournal;
+    string learningJournalError;
+    const bool learningJournalReady = learningJournal.Open((fs::path(GetExecutableDir()) / L"monitor.db").string(), learningJournalError);
+    if (learningJournalReady) learningJournal.RegisterPolicyVersion("impact-bandit-v1", "workload-context-v1:22", false, learningJournalError);
+    auto nativeActionExecutor = make_shared<WindowsProcessActionExecutor>();
+    ActionCoordinator actionCoordinator(nativeActionExecutor);
+    SafeOnlinePolicyController onlinePolicy(actionCoordinator, impactModel, learningJournal);
+    OnlinePolicyConfig onlinePolicyConfig;
+    onlinePolicyConfig.onlineEnabled = g_config.GetInt("ONLINE_POLICY_ENABLED", 0) != 0 &&
+        g_config.GetInt("ACTION_EXECUTION_ENABLED", 0) != 0;
+    bool persistedPolicyPromotion = false;
+    string promotionLookupError;
+    if (learningJournalReady) learningJournal.IsPolicyPromoted("impact-bandit-v1", persistedPolicyPromotion, promotionLookupError);
+    onlinePolicyConfig.policyPromoted = g_config.GetInt("ONLINE_POLICY_PROMOTED", 0) != 0 && persistedPolicyPromotion;
+    onlinePolicyConfig.globalDisable = g_config.GetInt("ACTION_GLOBAL_DISABLE", 1) != 0;
+    onlinePolicyConfig.requireApproval = g_config.GetInt("ACTION_REQUIRE_USER_APPROVAL", 1) != 0;
+    onlinePolicyConfig.maximumActionsPerHour = max(1, g_config.GetInt("ONLINE_MAX_ACTIONS_PER_HOUR", 3));
+    onlinePolicyConfig.cooldownSeconds = max(10, g_config.GetInt("ONLINE_ACTION_COOLDOWN_SEC", 600));
+    onlinePolicyConfig.maximumActionSeconds = max(1, g_config.GetInt("ACTION_MAX_DURATION_SEC", 30));
+    onlinePolicyConfig.observationSeconds = max(1, g_config.GetInt("ONLINE_OBSERVATION_SEC", 8));
+    onlinePolicyConfig.minimumLowerConfidenceBenefit = g_config.GetDouble("IMPACT_POLICY_REQUIRED_LOWER_BOUND", 0.05);
+    onlinePolicyConfig.minimumTargetSafety = g_config.GetDouble("ONLINE_MIN_TARGET_SAFETY", 90.0);
+    onlinePolicyConfig.maximumTargetCriticality = g_config.GetDouble("ONLINE_MAX_TARGET_CRITICALITY", 30.0);
+    onlinePolicyConfig.killSwitchFile = fs::path(GetExecutableDir()) / L"STOP_ACTIONS";
+    onlinePolicy.Configure(onlinePolicyConfig);
+    vector<string> onlineRecoveryErrors;
+    onlinePolicy.Initialize((fs::path(GetExecutableDir()) / L"monitor.db").string(), onlineRecoveryErrors);
 
     int cpuTh = g_config.GetInt("CPU_THRESHOLD", 80);
     int memTh = g_config.GetInt("MEM_THRESHOLD", 85);
@@ -1345,6 +1431,27 @@ void MonitorThread(HWND hwnd) {
 
         SystemSnapshot snapshot = collector.Collect();
         snapshot.scenarioLabel = ReadScenarioLabel();
+        WorkloadPhase workloadPhase = workloadDetector.Detect(snapshot);
+        QoeTelemetrySample qoeSample;
+        if (qoeCollectorReady) {
+            qoeSample = qoeCollector.Capture(snapshot, workloadPhase);
+            workloadPhase = workloadDetector.Detect(snapshot, &qoeSample);
+            qoeSample.workload = workloadPhase;
+        } else {
+            qoeSample.timestampMs = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+            qoeSample.workload = workloadPhase;
+            qoeSample.foregroundPid = snapshot.intent.foregroundPid;
+            qoeSample.foregroundProcess = snapshot.intent.foregroundProcess;
+            qoeSample.availability = "collector_unavailable:" + qoeInitializationError;
+        }
+        PerformanceCriticalityGraph criticalityGraph = criticalityEngine.Build(snapshot, workloadPhase);
+        WorkloadProtectionResult workloadProtection = workloadProtectionEngine.Build(snapshot, criticalityGraph, workloadPhase);
+        const int qoeWriteIntervalTicks = max(1, qoeSample.recommendedSampleIntervalMs / 1000);
+        if (qoeJournalReady && (g_tick % qoeWriteIntervalTicks) == 0) {
+            string qoeWriteError;
+            qoeJournal.Save(qoeSample, criticalityGraph, qoeWriteError);
+            if ((g_tick % 300) == 0) qoeJournal.EnforceRetention(10000, 50000, qoeWriteError);
+        }
 
         deque<double> cpuCopy, memCopy, diskCopy, netCopy, processCopy, topCpuCopy, topMemCopy;
         double aiProbLocal = 0.0;
@@ -1537,6 +1644,20 @@ void MonitorThread(HWND hwnd) {
         decisionContext.baselineStatus = baselineResult.status;
         decisionContext.baselineDominantMetric = baselineResult.dominantMetric;
         decisionContext.baselineReady = baselineResult.ready;
+        decisionContext.qoeAvailable = qoeSample.inputAvailable || qoeSample.pageReadAvailable || qoeSample.diskQueueAvailable || qoeSample.foregroundProgressAvailable;
+        decisionContext.workloadPhase = ToString(workloadPhase);
+        decisionContext.inputResponseMs = qoeSample.inputResponseMs;
+        decisionContext.systemPageReadsPerSecond = qoeSample.systemPageReadsPerSecond;
+        decisionContext.diskQueueLength = qoeSample.diskQueueLength;
+        decisionContext.droppedFramesPerSecond = qoeSample.droppedFramesPerSecond;
+        for (const CriticalityNode& node : criticalityGraph.nodes) {
+            if (node.protectedFromIntervention) decisionContext.protectedCriticalPathPids.push_back(node.pid);
+        }
+        for (DWORD protectedPid : workloadProtection.protectedPids) {
+            if (find(decisionContext.protectedCriticalPathPids.begin(), decisionContext.protectedCriticalPathPids.end(), protectedPid) == decisionContext.protectedCriticalPathPids.end()) {
+                decisionContext.protectedCriticalPathPids.push_back(protectedPid);
+            }
+        }
         decisionResult = g_decisionEngine.Evaluate(
             snapshot,
             currentAiProb,
@@ -1547,6 +1668,42 @@ void MonitorThread(HWND hwnd) {
             decisionContext,
             decisionPolicy
         );
+        double targetCriticality = 100.0;
+        for (const CriticalityNode& node : criticalityGraph.nodes) {
+            if (node.pid == decisionResult.actionTargetPid) {
+                targetCriticality = node.criticality;
+                break;
+            }
+        }
+        const WorkloadContextFeatures impactContext = impactContextEncoder.Encode(
+            snapshot,
+            qoeSample,
+            workloadPhase,
+            decisionResult.actionTargetPid,
+            targetCriticality,
+            decisionResult.candidate.safetyScore
+        );
+        const bool shadowTargetSafe = decisionResult.actionTargetPid != 0 &&
+            targetCriticality < 70.0 &&
+            decisionResult.candidate.safetyScore >= 70.0 &&
+            !decisionResult.candidate.protectedByUserIntent &&
+            !decisionResult.candidate.deniedByPolicy;
+        vector<ImpactCandidate> shadowCandidates = {
+            {ResourceActionType::LowerPriority, decisionResult.actionTargetPid, decisionResult.actionTarget, true, shadowTargetSafe},
+            {ResourceActionType::EnableEcoQos, decisionResult.actionTargetPid, decisionResult.actionTarget, true, shadowTargetSafe},
+            {ResourceActionType::LowerMemoryPriority, decisionResult.actionTargetPid, decisionResult.actionTarget, true, shadowTargetSafe},
+        };
+        const ShadowPolicyDecision shadowDecision = shadowImpactPolicy.Select(
+            impactContext,
+            shadowCandidates,
+            impactModel,
+            0.05,
+            max(20, g_config.GetInt("IMPACT_POLICY_MIN_OBSERVATIONS", 30))
+        );
+        if (learningJournalReady && (g_tick % 10) == 0) {
+            string shadowWriteError;
+            learningJournal.SaveShadowDecision(shadowDecision, impactContext, shadowWriteError);
+        }
         HealPlan healPlan = g_autoHealPlanner.BuildPlan(snapshot, decisionResult, decisionPolicy);
         HealVerification healVerification = g_healingVerifier.Evaluate(snapshot, decisionResult, healPlan);
         SafetyPolicyResult policyResult = g_safetyPolicyEngine.Evaluate(snapshot, decisionResult, healPlan, healVerification, decisionPolicy);
@@ -1554,7 +1711,52 @@ void MonitorThread(HWND hwnd) {
         BackgroundAgentConfig backgroundAgentConfig = BuildBackgroundAgentConfig(hwnd);
         BackgroundAgentResult backgroundAgentResult = g_backgroundAgent.Evaluate(snapshot, autopilotResult, backgroundAgentConfig);
         BenchmarkProofResult benchmarkProofResult = g_benchmarkProof.Build(snapshot, decisionResult, healPlan, autopilotResult);
+        OnlinePolicyInput onlineInput;
+        onlineInput.shadow = shadowDecision;
+        onlineInput.deterministicPolicy = policyResult;
+        onlineInput.context = impactContext;
+        onlineInput.foregroundPid = snapshot.intent.foregroundPid;
+        onlineInput.allowlist = SplitCsvValues(g_config.GetString("ACTION_ALLOWED_PROCESSES", ""));
+        onlineInput.protectedNames = SplitCsvValues(decisionPolicy.denylistCsv);
+        onlineInput.protectedNames.insert(onlineInput.protectedNames.end(), workloadProtection.protectedNames.begin(), workloadProtection.protectedNames.end());
+        for (const ProcessSnapshot& process : snapshot.processGenome) {
+            if (process.pid == decisionResult.actionTargetPid) {
+                onlineInput.targetExecutablePath = process.exePath;
+                onlineInput.targetCategory = process.category;
+                onlineInput.targetSafety = process.safety;
+                onlineInput.targetSystemCritical = process.isSystemCritical;
+                onlineInput.targetMatchesUserIntent = process.matchesUserIntent || process.isForeground || process.isRecentlyActive;
+                break;
+            }
+        }
+        const string approvalMode = ToUpperAscii(g_config.GetString("ACTION_APPROVAL_MODE", "MANUAL"));
+        onlineInput.userApproved = approvalMode == "ALLOWLIST" &&
+            ContainsProcessNameInsensitive(onlineInput.allowlist, shadowDecision.targetName);
+        const OnlinePolicyDecision onlineDecision = onlinePolicy.Evaluate(onlineInput);
+        if (onlineDecision.eligible) onlinePolicy.Execute(onlineInput, snapshot);
+        const vector<ActionImpactResult> onlineOutcomes = onlinePolicy.Tick(snapshot, OutcomePolicy{});
+        for (const ActionImpactResult& outcome : onlineOutcomes) {
+            AppendRuntimeLog("online_action_outcome", {
+                {"transaction_id", outcome.transactionId},
+                {"status", ToString(outcome.status)},
+                {"reward", to_string(outcome.reward)},
+                {"confidence", to_string(outcome.confidence)},
+                {"rollback", outcome.rollbackSucceeded ? "1" : "0"},
+                {"reason", outcome.reason},
+            });
+        }
+        const vector<BrowserBridgeResult> browserResults = browserBridge.DrainResults();
+        for (const BrowserBridgeResult& result : browserResults) {
+            AppendRuntimeLog("browser_cooperative_outcome", {
+                {"transaction_id", result.transactionId},
+                {"status", result.status},
+                {"reason", result.reason},
+            });
+        }
         if (backgroundAgentResult.quickRestoreRequested) {
+            vector<string> restoreErrors;
+            onlinePolicy.EmergencyStop("user requested Quick Restore", restoreErrors);
+            browserBridge.QueueRestoreAll();
             g_quickRestoreRequests.store(0);
         }
 
@@ -2090,7 +2292,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawTextAt(memDC, 18, 910, "BASE  " + ShortenText(ToUpperAscii(ToDisplayToken(baseline.status)), 16), RGB(180, 220, 255), gFontSmall);
         DrawTextAt(memDC, 18, 934, "AUTO  " + ShortenText(ToUpperAscii(ToDisplayToken(autopilot.status)), 16), autopilot.active ? RGB(120, 220, 160) : RGB(170, 180, 195), gFontSmall);
         DrawTextAt(memDC, 18, 958, "AGENT " + ShortenText(ToUpperAscii(ToDisplayToken(backgroundAgent.status)), 16), backgroundAgent.trayIconReady ? RGB(120, 220, 160) : RGB(255, 210, 120), gFontSmall);
-        DrawTextAt(memDC, 18, 982, "PROOF " + ShortenText(ToUpperAscii(ToDisplayToken(benchmarkProof.status)), 16), benchmarkProof.status == "PROOF_READY" ? RGB(120, 220, 160) : RGB(170, 180, 195), gFontSmall);
+        DrawTextAt(memDC, 18, 982, "SIMULATION " + ShortenText(ToUpperAscii(ToDisplayToken(benchmarkProof.status)), 16), benchmarkProof.status == "PROOF_READY" ? RGB(120, 220, 160) : RGB(170, 180, 195), gFontSmall);
 
         int mainX = sidebarW + pad;
         int mainW = client.right - mainX - pad;
@@ -2108,7 +2310,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DrawDashboardTabRect(memDC, runtimeTab, "Runtime", g_dashboardView == DashboardView::Runtime);
         DrawDashboardTabRect(memDC, autoHealTab, "Auto-Heal", g_dashboardView == DashboardView::AutoHeal);
         DrawDashboardTabRect(memDC, autopilotTab, "Autopilot", g_dashboardView == DashboardView::Autopilot);
-        DrawDashboardTabRect(memDC, proofTab, "Proof", g_dashboardView == DashboardView::Proof);
+        DrawDashboardTabRect(memDC, proofTab, "Impact", g_dashboardView == DashboardView::Proof);
 
         RECT statusBadge{ client.right - 220, 18, client.right - 20, 56 };
         DrawRoundedPanel(memDC, statusBadge, LevelFillColor(decisionLevel), LevelAccentColor(decisionLevel), 18);

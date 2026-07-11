@@ -101,7 +101,17 @@ AdaptiveBaselineResult AdaptiveBaselineEngine::EvaluateAndUpdate(
         topMemory_.samples
     });
     result.ready = result.sampleCount >= max(5, minSamples);
-    result.confidence = result.ready ? Clamp((static_cast<double>(result.sampleCount) / max(1, minSamples * 3)) * 100.0, 45.0, 100.0) : Clamp((static_cast<double>(result.sampleCount) / max(1, minSamples)) * 45.0, 0.0, 45.0);
+    result.confidence = result.ready
+        ? Clamp(
+            (static_cast<double>(result.sampleCount) / max(1, minSamples * 3)) * 100.0,
+            45.0,
+            100.0
+        )
+        : Clamp(
+            (static_cast<double>(result.sampleCount) / max(1, minSamples)) * 45.0,
+            0.0,
+            45.0
+        );
 
     result.cpuMean = cpu.mean;
     result.memoryMean = memory.mean;

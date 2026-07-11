@@ -105,6 +105,7 @@ void DrawLowEndAutopilotPanel(
     HFONT valueFont,
     HFONT smallFont
 ) {
+    (void)valueFont;
     const int savedDc = SaveDC(hdc);
     IntersectClipRect(hdc, bounds.left, bounds.top, bounds.right, bounds.bottom);
     const COLORREF accent = AutopilotAccent(result);
@@ -226,7 +227,7 @@ void DrawBenchmarkProofPanel(
     const COLORREF accent = ProofAccent(result);
     const int width = bounds.right - bounds.left;
     const int height = bounds.bottom - bounds.top;
-    DrawPanelTitle(hdc, bounds, "Proof / Benchmark Mode", accent, sectionFont);
+    DrawPanelTitle(hdc, bounds, "Impact Simulation", accent, sectionFont);
 
     RECT status{ bounds.left + 16, bounds.top + 48, bounds.right - 16, bounds.top + 90 };
     DrawStatus(hdc, status, result.status + "  |  ESTIMATED", accent, sectionFont);
@@ -271,7 +272,7 @@ void DrawBenchmarkProofPanel(
         DrawTextLine(hdc, bounds.left + 180, bounds.top + 404, Shorten(result.foregroundProcess, 28), kText, smallFont);
         DrawTextLine(hdc, bounds.left + 16, bounds.top + 434, Shorten(result.summary, 76), kMuted, smallFont);
         DrawTextLine(hdc, bounds.left + 16, bounds.top + 462,
-                     "Measured proof will replace estimates only after safe actions are enabled.", kAmber, smallFont);
+                     "Measured outcomes appear only after a real action and observation window.", kAmber, smallFont);
     }
 
     RestoreDC(hdc, savedDc);

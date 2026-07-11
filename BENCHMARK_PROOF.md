@@ -1,8 +1,8 @@
-# Proof / Benchmark Mode
+# Impact Simulation Mode
 
 Stage 11 adds the demo layer this project needs.
 
-The benchmark proof engine records:
+The impact simulation engine records:
 
 - Before CPU, RAM, disk free, and risk.
 - Estimated after CPU, RAM, disk free, and risk.
