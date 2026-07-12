@@ -198,6 +198,8 @@ These cannot be completed by implementation alone:
 
 ## Program Status
 
+UI modernization: COMPLETE (2026-07-12). The legacy single-canvas renderer was replaced by a responsive six-view Win32 control center. Live process genome, foreground QoE, criticality, shadow-policy, online-policy, runtime, safety, and benchmark state are now visible without mixing estimates with measured evidence. Navigation was exercised across all six views at 1180x720, the strict MSVC `/W4` build completed without warnings, and obsolete renderer code was removed.
+
 Current status: Milestones 1-7 are complete as a locally implemented and tested research prototype. Real action execution remains disabled by default.
 
 Next action: run the documented randomized benchmark campaign on the hardware matrix, retain all negative and safety results, and obtain independent reproduction before making any public performance or production-readiness claim.

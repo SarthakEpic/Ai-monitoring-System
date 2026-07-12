@@ -7,6 +7,7 @@ The current version focuses on safe predictive monitoring: it detects resource p
 ## Highlights
 
 - Native C++20 / Win32 desktop dashboard
+- Responsive six-view control center for overview, processes, intelligence, safety, experiments, and settings
 - CPU, memory, disk, network, process-count, and top-process monitoring
 - Process Genome Engine with per-process CPU, memory, I/O, lifetime, parent PID, foreground/window status, trust signals, category, safety, waste score, and expected gain
 - User Intent Engine that detects active/idle/away state, foreground app, app kind, fullscreen state, focus duration, and recent active apps
@@ -180,7 +181,7 @@ PredictiveAutoHeal/
 ├── LowEndAutopilot.*         # Safe low-end process ranking and reversible recommendations
 ├── BackgroundAgent.*         # Tray/background runtime state contract
 ├── BenchmarkProof.*          # Clearly labeled impact simulation estimates
-├── StageControlCenterUI.*    # Autopilot, agent, and impact-simulation dashboard panels
+├── ModernDashboardUI.*      # Six-view control center and responsive dashboard renderer
 ├── AppConfig.*               # Config file parsing
 ├── train_model.py            # Model training and reliability report
 ├── predict_model.py          # Runtime prediction CLI

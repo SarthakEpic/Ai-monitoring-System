@@ -35,8 +35,8 @@
 #include "RuntimeHealth.h"
 #include "SafeOnlinePolicy.h"
 #include "SafetyPolicy.h"
-#include "StageControlCenterUI.h"
 #include "MetricsStorage.h"
+#include "ModernDashboardUI.h"
 #include "SystemMetrics.h"
 
 using namespace std;
@@ -59,14 +59,6 @@ constexpr UINT ID_TRAY_OPEN_DASHBOARD = 5001;
 constexpr UINT ID_TRAY_QUICK_RESTORE = 5002;
 constexpr UINT ID_TRAY_EXIT = 5003;
 
-enum class DashboardView {
-    Overview,
-    Reliability,
-    Runtime,
-    AutoHeal,
-    Autopilot,
-    Proof,
-};
 
 double g_cpu = 0.0;
 double g_mem = 0.0;
@@ -131,6 +123,12 @@ deque<double> g_netHist;
 deque<double> g_processHist;
 deque<double> g_topCpuHist;
 deque<double> g_topMemHist;
+deque<double> g_inputLatencyHist;
+vector<ProcessSnapshot> g_processGenome;
+QoeTelemetrySample g_qoeSample;
+PerformanceCriticalityGraph g_criticalityGraph;
+ShadowPolicyDecision g_shadowPolicyDecision;
+OnlinePolicyDecision g_onlinePolicyDecision;
 
 mutex g_dataMutex;
 mutex g_logMutex;
@@ -192,17 +190,6 @@ void PushHistory(deque<double>& hist, double value, size_t maxSize) {
 
 double ClampDouble(double value, double lo, double hi) {
     return max(lo, min(hi, value));
-}
-
-string FormatRate(double kbps) {
-    ostringstream oss;
-    oss << fixed << setprecision(1);
-    if (kbps >= 1024.0) {
-        oss << (kbps / 1024.0) << " MB/s";
-    } else {
-        oss << kbps << " KB/s";
-    }
-    return oss.str();
 }
 
 string ShortenText(const string& text, size_t maxLen) {
@@ -309,46 +296,6 @@ string ReadScenarioLabel() {
 
 wstring WidenAscii(const string& text) {
     return wstring(text.begin(), text.end());
-}
-
-COLORREF LevelFillColor(RiskLevel level) {
-    switch (level) {
-    case RiskLevel::Critical:
-        return RGB(64, 24, 32);
-    case RiskLevel::Warning:
-        return RGB(84, 58, 12);
-    case RiskLevel::Normal:
-    default:
-        return RGB(25, 51, 44);
-    }
-}
-
-COLORREF LevelAccentColor(RiskLevel level) {
-    switch (level) {
-    case RiskLevel::Critical:
-        return RGB(231, 76, 60);
-    case RiskLevel::Warning:
-        return RGB(241, 196, 15);
-    case RiskLevel::Normal:
-    default:
-        return RGB(46, 204, 113);
-    }
-}
-COLORREF RuntimeHealthAccentColor(const string& status) {
-    string normalized = ToUpperAscii(status);
-    if (normalized == "CRITICAL") return RGB(231, 76, 60);
-    if (normalized == "DEGRADED") return RGB(241, 196, 15);
-    if (normalized == "HEALTHY") return RGB(46, 204, 113);
-    return RGB(52, 152, 219);
-}
-
-string FormatLatencyMs(double latencyMs) {
-    if (latencyMs >= 1000.0) {
-        ostringstream oss;
-        oss << fixed << setprecision(1) << (latencyMs / 1000.0) << "s";
-        return oss.str();
-    }
-    return to_string(static_cast<int>(max(0.0, latencyMs))) + "ms";
 }
 
 wstring GetExecutableDir() {
@@ -901,431 +848,6 @@ ModelPrediction ReadServicePrediction() {
     return ParseModelPredictionText(text);
 }
 
-void DrawTextAt(HDC hdc, int x, int y, const string& text, COLORREF color, HFONT font) {
-    HGDIOBJ oldFont = SelectObject(hdc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, color);
-    TextOutA(hdc, x, y, text.c_str(), static_cast<int>(text.size()));
-    SelectObject(hdc, oldFont);
-}
-
-void DrawRoundedPanel(HDC hdc, const RECT& rc, COLORREF fill, COLORREF border, int radius = 18) {
-    HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = CreatePen(PS_SOLID, 1, border);
-
-    HGDIOBJ oldBrush = SelectObject(hdc, brush);
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
-
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
-
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-
-    DeleteObject(brush);
-    DeleteObject(pen);
-}
-
-void DrawProgressBar(HDC hdc, int x, int y, int w, int h, double value, COLORREF fillColor) {
-    value = ClampDouble(value, 0.0, 100.0);
-
-    RECT bg{ x, y, x + w, y + h };
-    RECT fg{ x, y, x + static_cast<int>((value / 100.0) * w), y + h };
-
-    HBRUSH bgBrush = CreateSolidBrush(RGB(42, 49, 62));
-    HBRUSH fgBrush = CreateSolidBrush(fillColor);
-
-    FillRect(hdc, &bg, bgBrush);
-    FillRect(hdc, &fg, fgBrush);
-
-    DeleteObject(bgBrush);
-    DeleteObject(fgBrush);
-}
-
-void DrawMetricCard(HDC hdc, int x, int y, int w, int h,
-                    const string& title,
-                    const string& valueText,
-                    const string& subText,
-                    double progressValue,
-                    COLORREF accent,
-                    bool alertCard) {
-    RECT rc{ x, y, x + w, y + h };
-
-    COLORREF fill = alertCard ? RGB(64, 24, 32) : RGB(26, 32, 43);
-    COLORREF border = alertCard ? RGB(231, 76, 60) : accent;
-    DrawRoundedPanel(hdc, rc, fill, border, 24);
-
-    DrawTextAt(hdc, x + 18, y + 16, title, RGB(225, 232, 242), gFontSection);
-    DrawTextAt(hdc, x + 18, y + 48, valueText, RGB(255, 255, 255), gFontValue);
-    DrawTextAt(hdc, x + 18, y + h - 48, subText, RGB(176, 186, 199), gFontSmall);
-
-    DrawProgressBar(hdc, x + 18, y + h - 26, w - 36, 10, progressValue, accent);
-}
-
-void DrawSectionPanel(HDC hdc, const RECT& rc, const string& title, COLORREF border = RGB(56, 66, 82)) {
-    DrawRoundedPanel(hdc, rc, RGB(18, 22, 31), border, 18);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 12, title, RGB(235, 240, 248), gFontSection);
-}
-
-void DrawDashboardTab(HDC hdc, int x, int y, const string& text, bool active) {
-    int w = static_cast<int>(text.size()) * 9 + 28;
-    RECT rc{ x, y, x + w, y + 34 };
-    DrawRoundedPanel(hdc, rc, active ? RGB(30, 44, 62) : RGB(18, 22, 31), active ? RGB(52, 152, 219) : RGB(55, 65, 82), 14);
-    DrawTextAt(hdc, x + 14, y + 9, text, active ? RGB(230, 242, 255) : RGB(145, 155, 170), gFontSmall);
-}
-
-RECT DashboardTabRect(int mainX, int y, DashboardView view) {
-    switch (view) {
-    case DashboardView::Overview:
-        return RECT{ mainX, y, mainX + 104, y + 34 };
-    case DashboardView::Reliability:
-        return RECT{ mainX + 112, y, mainX + 266, y + 34 };
-    case DashboardView::Runtime:
-        return RECT{ mainX + 274, y, mainX + 374, y + 34 };
-    case DashboardView::AutoHeal:
-        return RECT{ mainX + 382, y, mainX + 494, y + 34 };
-    case DashboardView::Autopilot:
-        return RECT{ mainX + 502, y, mainX + 622, y + 34 };
-    case DashboardView::Proof:
-        return RECT{ mainX + 630, y, mainX + 724, y + 34 };
-    default:
-        return RECT{ mainX, y, mainX, y };
-    }
-}
-
-void DrawDashboardTabRect(HDC hdc, const RECT& rc, const string& text, bool active) {
-    DrawRoundedPanel(hdc, rc, active ? RGB(30, 44, 62) : RGB(18, 22, 31), active ? RGB(52, 152, 219) : RGB(55, 65, 82), 14);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 9, text, active ? RGB(230, 242, 255) : RGB(145, 155, 170), gFontSmall);
-}
-
-bool PtInRectSimple(const RECT& rc, int x, int y) {
-    return x >= rc.left && x <= rc.right && y >= rc.top && y <= rc.bottom;
-}
-
-void DrawGraph(HDC hdc, const RECT& rc,
-               const deque<double>& cpuHist,
-               const deque<double>& memHist,
-               const deque<double>& diskHist) {
-    DrawRoundedPanel(hdc, rc, RGB(18, 22, 31), RGB(56, 66, 82), 24);
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 14, "Live Trend Graph", RGB(235, 240, 248), gFontSection);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 38, "Blue = CPU   Green = Memory   Yellow = Disk", RGB(155, 165, 180), gFontSmall);
-
-    RECT inner{ rc.left + 18, rc.top + 68, rc.right - 18, rc.bottom - 20 };
-
-    HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(35, 43, 54));
-    HPEN axisPen = CreatePen(PS_SOLID, 1, RGB(80, 90, 104));
-
-    HGDIOBJ oldPen = SelectObject(hdc, gridPen);
-
-    for (int i = 0; i <= 4; ++i) {
-        int y = inner.top + (i * (inner.bottom - inner.top) / 4);
-        MoveToEx(hdc, inner.left, y, NULL);
-        LineTo(hdc, inner.right, y);
-
-        string label = to_string(100 - i * 25);
-        DrawTextAt(hdc, inner.left - 28, y - 8, label, RGB(120, 130, 145), gFontSmall);
-    }
-
-    SelectObject(hdc, axisPen);
-    Rectangle(hdc, inner.left, inner.top, inner.right, inner.bottom);
-
-    auto drawSeries = [&](const deque<double>& hist, COLORREF color) {
-        if (hist.size() < 2) return;
-
-        HPEN pen = CreatePen(PS_SOLID, 3, color);
-        HGDIOBJ old = SelectObject(hdc, pen);
-
-        int n = static_cast<int>(hist.size());
-        int w = inner.right - inner.left;
-        int h = inner.bottom - inner.top;
-
-        for (int i = 0; i < n; ++i) {
-            double v = ClampDouble(hist[i], 0.0, 100.0);
-            int x = inner.left + (i * w) / max(1, n - 1);
-            int y = inner.bottom - static_cast<int>((v / 100.0) * h);
-
-            if (i == 0) MoveToEx(hdc, x, y, NULL);
-            else LineTo(hdc, x, y);
-        }
-
-        SelectObject(hdc, old);
-        DeleteObject(pen);
-    };
-
-    drawSeries(cpuHist, RGB(52, 152, 219));
-    drawSeries(memHist, RGB(46, 204, 113));
-    drawSeries(diskHist, RGB(241, 196, 15));
-
-    SelectObject(hdc, oldPen);
-    DeleteObject(gridPen);
-    DeleteObject(axisPen);
-}
-
-void DrawReliabilityPanel(HDC hdc, const RECT& rc,
-                          double aiProb,
-                          double aiConfidence,
-                          const string& source,
-                          const string& aiClass,
-                          const string& aiReason,
-                          const string& rootCause,
-                          const string& modelReadiness,
-                          const string& modelGeneratedAt,
-                          int modelFeatureCount,
-                          RiskLevel decisionLevel) {
-    DrawSectionPanel(hdc, rc, "AI Reliability", LevelAccentColor(decisionLevel));
-
-    const int panelH = rc.bottom - rc.top;
-    const string readiness = ToUpperAscii(ToDisplayToken(modelReadiness));
-    string featureText = modelFeatureCount > 0 ? to_string(modelFeatureCount) + "F" : "N/A";
-    string builtText = modelGeneratedAt == "unknown" ? "unknown" : ShortenText(modelGeneratedAt, 19);
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 48, "Risk", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 72, to_string(static_cast<int>(aiProb)) + "%", RGB(255, 255, 255), gFontValue);
-    DrawProgressBar(hdc, rc.left + 16, rc.top + 118, rc.right - rc.left - 32, 12, aiProb, LevelAccentColor(decisionLevel));
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 152, "Confidence", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 176, to_string(static_cast<int>(aiConfidence)) + "%", RGB(235, 240, 248), gFontSection);
-    DrawProgressBar(hdc, rc.left + 16, rc.top + 204, rc.right - rc.left - 32, 10, aiConfidence, RGB(52, 152, 219));
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 238, "Source", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 90, rc.top + 238, source, RGB(180, 220, 255), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 264, "Class", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 90, rc.top + 264, aiClass, RGB(235, 240, 248), gFontSmall);
-
-    if (panelH >= 330) {
-        DrawTextAt(hdc, rc.left + 16, rc.top + 290, "Model", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 90, rc.top + 290, ShortenText(readiness + " / " + featureText, 24), RGB(235, 240, 248), gFontSmall);
-        DrawTextAt(hdc, rc.left + 16, rc.top + 316, "Built", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 90, rc.top + 316, ShortenText(builtText, 24), RGB(235, 240, 248), gFontSmall);
-        DrawTextAt(hdc, rc.left + 16, rc.top + 342, "Root", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 90, rc.top + 342, ShortenText(ToUpperAscii(ToDisplayToken(rootCause)), 24), RGB(235, 240, 248), gFontSmall);
-        DrawTextAt(hdc, rc.left + 16, rc.top + 368, "Why", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 58, rc.top + 368, ShortenText(aiReason, 42), RGB(235, 240, 248), gFontSmall);
-    } else {
-        DrawTextAt(hdc, rc.left + 16, rc.top + 290, "Root", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 90, rc.top + 290, ShortenText(ToUpperAscii(ToDisplayToken(rootCause)), 24), RGB(235, 240, 248), gFontSmall);
-    }
-}
-
-void DrawDecisionPanel(HDC hdc, const RECT& rc,
-                       RiskLevel decisionLevel,
-                       double riskScore,
-                       double anomalyScore,
-                       double pressureScore,
-                       const string& decisionSummary,
-                       const string& rootCause,
-                       const string& rootCauseDetail,
-                       const string& safetyGate) {
-    DrawSectionPanel(hdc, rc, "Decision Engine", LevelAccentColor(decisionLevel));
-    RECT badge{ rc.left + 14, rc.top + 48, rc.right - 14, rc.top + 84 };
-    DrawRoundedPanel(hdc, badge, LevelFillColor(decisionLevel), LevelAccentColor(decisionLevel), 14);
-    DrawTextAt(hdc, badge.left + 14, badge.top + 9, DecisionEngine::ToString(decisionLevel), RGB(255, 255, 255), gFontSection);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 108, "Risk " + to_string(static_cast<int>(riskScore)) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 112, rc.top + 108, "Anomaly " + to_string(static_cast<int>(anomalyScore)) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 134, "Pressure " + to_string(static_cast<int>(pressureScore)) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 160, ShortenText(decisionSummary, 38), RGB(180, 220, 255), gFontSmall);
-    if ((rc.bottom - rc.top) >= 178) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 186, "Cause " + ShortenText(ToUpperAscii(ToDisplayToken(rootCause)), 24), RGB(170, 180, 195), gFontSmall);
-    }
-    if ((rc.bottom - rc.top) >= 214) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 212, "Gate " + ShortenText(ToUpperAscii(ToDisplayToken(safetyGate)), 26), RGB(255, 210, 120), gFontSmall);
-    }
-    if ((rc.bottom - rc.top) >= 250) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 238, ShortenText(rootCauseDetail, 42), RGB(155, 165, 180), gFontSmall);
-    }
-}
-
-void DrawRuntimePanel(HDC hdc, const RECT& rc,
-                      const string& performanceMode,
-                      int aiPredictIntervalTicks,
-                      int modelCacheTtlTicks,
-                      size_t pendingWrites,
-                      bool storageReady,
-                      const RuntimeHealthSample& runtimeHealth,
-                      const AdaptiveBaselineResult& baseline) {
-    const COLORREF healthColor = storageReady ? RuntimeHealthAccentColor(runtimeHealth.status) : RGB(231, 76, 60);
-    DrawSectionPanel(hdc, rc, "Runtime & Storage", healthColor);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 50, "Health", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 100, rc.top + 50, runtimeHealth.status, healthColor, gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 78, "Mode", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 100, rc.top + 78, FormatModeLabel(performanceMode), RGB(235, 240, 248), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 106, "Model", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 100, rc.top + 106,
-               "every " + to_string(aiPredictIntervalTicks) + "s / cache " +
-                   to_string(modelCacheTtlTicks) + "s",
-               RGB(235, 240, 248), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 134, "SQLite", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 100, rc.top + 134, storageReady ? "ACTIVE" : "OFFLINE", storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 162, "Queue", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 100, rc.top + 162, to_string(pendingWrites), RGB(235, 240, 248), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 190, "Latency", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 100, rc.top + 190, FormatLatencyMs(runtimeHealth.avgPredictionLatencyMs), RGB(235, 240, 248), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 218, "Model OK", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 100, rc.top + 218, to_string(static_cast<int>(runtimeHealth.modelSuccessRate)) + "%", RGB(180, 220, 255), gFontSmall);
-
-    if ((rc.bottom - rc.top) >= 280) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 246, "DB OK", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 100, rc.top + 246, to_string(static_cast<int>(runtimeHealth.storageSuccessRate)) + "%", RGB(180, 220, 255), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 274, "Fallback", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 100, rc.top + 274, to_string(static_cast<int>(runtimeHealth.fallbackRate)) + "%", RGB(235, 240, 248), gFontSmall);
-    }
-
-    if ((rc.bottom - rc.top) >= 350) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 302, "Baseline", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 100, rc.top + 302,
-                   ShortenText(ToUpperAscii(ToDisplayToken(baseline.status)), 24),
-                   baseline.ready ? RGB(120, 220, 160) : RGB(255, 210, 120), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 326, "Path", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 100, rc.top + 326, ShortenText(ToUpperAscii(ToDisplayToken(runtimeHealth.predictionPath)), 24), RGB(235, 240, 248), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 350, "Why", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(hdc, rc.left + 100, rc.top + 350, ShortenText(runtimeHealth.summary, 34), RGB(170, 180, 195), gFontSmall);
-    }
-}
-
-void DrawAutoHealPanel(HDC hdc, const RECT& rc,
-                       const string& recommendedAction,
-                       bool safeToHeal,
-                       const SystemSnapshot& snapshot,
-                       const string& actionTarget,
-                       const string& safetyGate,
-                       const string& blockedReason,
-                       double actionConfidence,
-                       double expectedGainMB,
-                       int cooldownRemainingSeconds,
-                       int candidateCount,
-                       bool dryRun,
-                       const HealPlan& plan,
-                       const HealVerification& verification,
-                       const SafetyPolicyResult& policyResult) {
-    (void)snapshot;
-    DrawSectionPanel(hdc, rc, "Auto-Heal Readiness", safeToHeal ? RGB(46, 204, 113) : RGB(241, 196, 15));
-    RECT status{ rc.left + 14, rc.top + 48, rc.right - 14, rc.top + 88 };
-    DrawRoundedPanel(hdc, status, safeToHeal ? RGB(25, 51, 44) : RGB(68, 50, 20), safeToHeal ? RGB(46, 204, 113) : RGB(241, 196, 15), 14);
-    DrawTextAt(hdc, status.left + 14, status.top + 11, string("HEAL READY: ") + (safeToHeal ? "YES" : "NO"), RGB(255, 255, 255), gFontSection);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 112, "Action", RGB(160, 170, 185), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 138, ShortenText(ToUpperAscii(ToDisplayToken(recommendedAction)), 30), RGB(235, 240, 248), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 164, "Target: " + ShortenText(actionTarget, 24), RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 190,
-               "Gate: " + ShortenText(ToUpperAscii(ToDisplayToken(safetyGate)), 24) +
-                   "  Conf " + to_string(static_cast<int>(actionConfidence)) + "%",
-               RGB(255, 210, 120), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 216,
-               "Mode: " + string(dryRun ? "DRY RUN" : "EXECUTION") +
-                   " / " + ShortenText(blockedReason, 28),
-               dryRun ? RGB(255, 210, 120) : RGB(120, 220, 160), gFontSmall);
-    if ((rc.bottom - rc.top) >= 230) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 242, "Plan: " + ShortenText(ToUpperAscii(ToDisplayToken(plan.status)), 22), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 268, "Ready " + to_string(static_cast<int>(plan.readinessScore)) + "%  Gain " + to_string(static_cast<int>(expectedGainMB)) + " MB", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 294, "Candidates " + to_string(candidateCount) + "  Cooldown " + to_string(cooldownRemainingSeconds) + "s", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 320, "Verify: " + ShortenText(ToUpperAscii(ToDisplayToken(verification.status)), 24), RGB(180, 220, 255), gFontSmall);
-    }
-    if ((rc.bottom - rc.top) >= 390) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 360, "Stage 4 Plan", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 392, "Pre: " + ShortenText(plan.preCheck, 42), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 418, "Step: " + ShortenText(plan.executionStep, 41), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 444, "Post: " + ShortenText(plan.postCheck, 41), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 470, ShortenText(plan.safetyNotes, 44), RGB(180, 220, 255), gFontSmall);
-    }
-    if ((rc.bottom - rc.top) >= 540) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 510, "Stage 5 Verification", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 542, "Outcome " + ShortenText(ToUpperAscii(ToDisplayToken(verification.outcomeLabel)), 27), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 568, "Risk " + to_string(static_cast<int>(verification.riskBefore)) + "% -> " + to_string(static_cast<int>(verification.riskAfterEstimate)) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 594, "Delta " + to_string(static_cast<int>(verification.riskDeltaEstimate)) + "%  Conf " + to_string(static_cast<int>(verification.confidence)) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 620, ShortenText(verification.reason, 44), RGB(180, 220, 255), gFontSmall);
-    }
-    if ((rc.bottom - rc.top) >= 700) {
-        DrawTextAt(hdc, rc.left + 14, rc.top + 660, "Stage 6 Policy", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 692, "Level " + ShortenText(ToUpperAscii(ToDisplayToken(policyResult.levelName)), 28), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 718, "Code " + ShortenText(policyResult.reasonCode, 32), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 744, "Score " + to_string(static_cast<int>(policyResult.policyScore)) + "%  Eligible " + string(policyResult.executionEligible ? "YES" : "NO"), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(hdc, rc.left + 14, rc.top + 770, ShortenText(policyResult.reason, 44), RGB(180, 220, 255), gFontSmall);
-    }
-}
-
-void DrawThresholdPanel(HDC hdc, const RECT& rc,
-                        int cpuTh, int memTh, int diskTh,
-                        double aiAlertTh,
-                        double warningRiskThreshold,
-                        double criticalRiskThreshold) {
-    DrawSectionPanel(hdc, rc, "Thresholds", RGB(90, 108, 132));
-    DrawTextAt(hdc, rc.left + 14, rc.top + 52, "CPU " + to_string(cpuTh) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 112, rc.top + 52, "MEM " + to_string(memTh) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 84, "DISK " + to_string(diskTh) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 112, rc.top + 84, "AI " + to_string(static_cast<int>(aiAlertTh)) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 14, rc.top + 124, "WARN " + to_string(static_cast<int>(warningRiskThreshold)) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 112, rc.top + 124, "CRIT " + to_string(static_cast<int>(criticalRiskThreshold)) + "%", RGB(170, 180, 195), gFontSmall);
-}
-
-void DrawPlaceholderWidePanel(HDC hdc, const RECT& rc, const string& title, const string& line1, const string& line2) {
-    DrawSectionPanel(hdc, rc, title, RGB(52, 152, 219));
-    DrawTextAt(hdc, rc.left + 18, rc.top + 56, line1, RGB(210, 220, 235), gFontSection);
-    DrawTextAt(hdc, rc.left + 18, rc.top + 92, line2, RGB(155, 165, 180), gFontSmall);
-}
-
-void DrawInsightPanel(HDC hdc, const RECT& rc,
-                      const SystemSnapshot& snapshot,
-                      double aiProb, const string& source,
-                      double aiConfidence,
-                      const string& aiClass,
-                      const string& aiReason,
-                      const string& recommendedAction,
-                      bool safeToHeal,
-                      RiskLevel decisionLevel,
-                      double riskScore,
-                      double anomalyScore,
-                      double pressureScore,
-                      const string& decisionSummary,
-                      int cpuTh, int memTh, int diskTh,
-                      double aiAlertTh,
-                      double warningRiskThreshold,
-                      double criticalRiskThreshold,
-                      const string& performanceMode,
-                      int aiPredictIntervalTicks,
-                      int modelCacheTtlTicks,
-                      size_t pendingWrites,
-                      bool storageReady) {
-    (void)snapshot;
-    COLORREF bg = (decisionLevel == RiskLevel::Normal) ? RGB(20, 26, 36) : LevelFillColor(decisionLevel);
-    COLORREF border = (decisionLevel == RiskLevel::Normal) ? RGB(62, 76, 94) : LevelAccentColor(decisionLevel);
-    DrawRoundedPanel(hdc, rc, bg, border, 24);
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 14, "AI Insights", RGB(235, 240, 248), gFontSection);
-
-    RECT badge{ rc.left + 16, rc.top + 48, rc.right - 16, rc.top + 92 };
-    DrawRoundedPanel(hdc, badge, LevelAccentColor(decisionLevel), LevelAccentColor(decisionLevel), 18);
-    DrawTextAt(hdc, rc.left + 30, rc.top + 60, DecisionEngine::ToString(decisionLevel), RGB(255, 255, 255), gFontSection);
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 112, "AI Risk", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 134, to_string(static_cast<int>(aiProb)) + "%", RGB(255, 255, 255), gFontValue);
-    DrawTextAt(hdc, rc.left + 120, rc.top + 142, "CONF " + to_string(static_cast<int>(aiConfidence)) + "%", RGB(180, 220, 255), gFontSmall);
-    DrawProgressBar(hdc, rc.left + 16, rc.top + 178, rc.right - rc.left - 32, 14, aiProb, LevelAccentColor(decisionLevel));
-
-    RECT modelBox{ rc.left + 16, rc.top + 214, rc.right - 16, rc.top + 318 };
-    DrawRoundedPanel(hdc, modelBox, RGB(18, 24, 34), RGB(55, 70, 88), 16);
-    DrawTextAt(hdc, modelBox.left + 14, modelBox.top + 12, "Model Health", RGB(235, 240, 248), gFontSection);
-    DrawTextAt(hdc, modelBox.left + 14, modelBox.top + 42, "SRC " + source + "   CLASS " + aiClass, RGB(180, 220, 255), gFontSmall);
-    DrawTextAt(hdc, modelBox.left + 14, modelBox.top + 68, "WHY " + ShortenText(aiReason, 31), RGB(170, 180, 195), gFontSmall);
-
-    RECT actionBox{ rc.left + 16, rc.top + 334, rc.right - 16, rc.top + 452 };
-    DrawRoundedPanel(hdc, actionBox, RGB(18, 24, 34), safeToHeal ? RGB(46, 204, 113) : RGB(75, 90, 110), 16);
-    DrawTextAt(hdc, actionBox.left + 14, actionBox.top + 12, "Auto-Heal Readiness", RGB(235, 240, 248), gFontSection);
-    DrawTextAt(hdc, actionBox.left + 14, actionBox.top + 44, string("HEAL READY: ") + (safeToHeal ? "YES" : "NO"), safeToHeal ? RGB(120, 220, 160) : RGB(255, 210, 120), gFontSection);
-    DrawTextAt(hdc, actionBox.left + 14, actionBox.top + 78, "ACTION " + ShortenText(ToUpperAscii(ToDisplayToken(recommendedAction)), 25), RGB(170, 180, 195), gFontSmall);
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 478, "Decision", RGB(230, 235, 245), gFontSection);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 508, "Risk " + to_string(static_cast<int>(riskScore)) + "%  Anom " + to_string(static_cast<int>(anomalyScore)) + "%  Press " + to_string(static_cast<int>(pressureScore)) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 532, ShortenText(decisionSummary, 34), RGB(180, 220, 255), gFontSmall);
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 576, "Runtime", RGB(230, 235, 245), gFontSection);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 606, "MODE " + FormatModeLabel(performanceMode), RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 630, "MODEL " + to_string(aiPredictIntervalTicks) + "s   CACHE " + to_string(modelCacheTtlTicks) + "s", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 654, string("SQLITE ") + (storageReady ? "ACTIVE" : "OFFLINE") + "   QUEUE " + to_string(pendingWrites), storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
-
-    DrawTextAt(hdc, rc.left + 16, rc.top + 698, "Thresholds", RGB(230, 235, 245), gFontSection);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 728, "CPU " + to_string(cpuTh) + "%  MEM " + to_string(memTh) + "%  DISK " + to_string(diskTh) + "%", RGB(170, 180, 195), gFontSmall);
-    DrawTextAt(hdc, rc.left + 16, rc.top + 752, "AI " + to_string(static_cast<int>(aiAlertTh)) + "%  WARN " + to_string(static_cast<int>(warningRiskThreshold)) + "%  CRIT " + to_string(static_cast<int>(criticalRiskThreshold)) + "%", RGB(170, 180, 195), gFontSmall);
-}
-
 void MonitorThread(HWND hwnd) {
     WindowsMetricsCollector collector;
     if (!collector.Initialize()) return;
@@ -1491,6 +1013,9 @@ void MonitorThread(HWND hwnd) {
             g_userIdleSeconds = snapshot.intent.idleSeconds;
             g_focusDurationSeconds = snapshot.intent.focusDurationSeconds;
             g_foregroundFullscreen = snapshot.intent.isFullscreen;
+            g_processGenome = snapshot.processGenome;
+            g_qoeSample = qoeSample;
+            g_criticalityGraph = criticalityGraph;
 
             PushHistory(g_cpuHist, snapshot.cpuUsage, HISTORY_SIZE);
             PushHistory(g_memHist, snapshot.memoryUsage, HISTORY_SIZE);
@@ -1499,6 +1024,8 @@ void MonitorThread(HWND hwnd) {
             PushHistory(g_processHist, static_cast<double>(snapshot.processCount), HISTORY_SIZE);
             PushHistory(g_topCpuHist, snapshot.topProcess.cpuPercent, HISTORY_SIZE);
             PushHistory(g_topMemHist, snapshot.topProcess.memoryMB, HISTORY_SIZE);
+            PushHistory(g_inputLatencyHist, qoeSample.inputAvailable ? qoeSample.inputResponseMs : snapshot.netDownKBps,
+                        HISTORY_SIZE);
 
             cpuCopy = g_cpuHist;
             memCopy = g_memHist;
@@ -1787,6 +1314,8 @@ void MonitorThread(HWND hwnd) {
             g_autopilotResult = autopilotResult;
             g_backgroundAgentResult = backgroundAgentResult;
             g_benchmarkProofResult = benchmarkProofResult;
+            g_shadowPolicyDecision = shadowDecision;
+            g_onlinePolicyDecision = onlineDecision;
 
             if (decisionResult.level == RiskLevel::Critical) {
                 ++highRiskStreak;
@@ -2168,7 +1697,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         int cpuTh = g_config.GetInt("CPU_THRESHOLD", 80);
         int memTh = g_config.GetInt("MEM_THRESHOLD", 85);
         int diskTh = g_config.GetInt("DISK_THRESHOLD", 10);
-        double aiAlertTh = ClampDouble(g_config.GetDouble("AI_ALERT_THRESHOLD", DEFAULT_AI_ALERT_THRESHOLD), 0.0, 100.0);
         double warningRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_WARNING_THRESHOLD", 55.0), 0.0, 100.0);
         double criticalRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_CRITICAL_THRESHOLD", 75.0), warningRiskThreshold, 100.0);
         string performanceMode = ResolvePerformanceMode();
@@ -2245,158 +1773,78 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             diskHist = g_diskHist;
         }
 
-        const int sidebarW = 238;
-        const int pad = 16;
-        const int headerH = 88;
-
-        RECT sidebar{ 0, 0, sidebarW, client.bottom };
-        DrawRoundedPanel(memDC, sidebar, RGB(11, 14, 20), RGB(22, 27, 35), 0);
-
-        DrawTextAt(memDC, 18, 18, "AI Monitor", RGB(255, 255, 255), gFontTitle);
-        DrawTextAt(memDC, 18, 56, "Predictive Failure", RGB(160, 170, 185), gFontSmall);
-        DrawTextAt(memDC, 18, 76, "Observability", RGB(160, 170, 185), gFontSmall);
-
-        RECT modeBadge{ 16, 112, sidebarW - 16, 160 };
-        DrawRoundedPanel(memDC, modeBadge, LevelFillColor(decisionLevel), LevelAccentColor(decisionLevel), 18);
-        DrawTextAt(memDC, 32, 128, string(DecisionEngine::ToString(decisionLevel)) + " MODE", RGB(255, 255, 255), gFontSection);
-
-        DrawTextAt(memDC, 18, 190, "Current", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(memDC, 18, 222, "CPU   " + to_string(static_cast<int>(snapshot.cpuUsage)) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 246, "MEM   " + to_string(static_cast<int>(snapshot.memoryUsage)) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 270, "DISK  " + to_string(static_cast<int>(snapshot.diskFree)) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 294, "RISK  " + to_string(static_cast<int>(riskScore)) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 318, "AI    " + to_string(static_cast<int>(aiProb)) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 342, "CONF  " + to_string(static_cast<int>(aiConfidence)) + "%", RGB(170, 180, 195), gFontSmall);
-
-        DrawTextAt(memDC, 18, 390, "Telemetry", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(memDC, 18, 422, "SRC   " + source, RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 446, "DOWN  " + FormatRate(snapshot.netDownKBps), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 470, "UP    " + FormatRate(snapshot.netUpKBps), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 494, "PROC  " + to_string(snapshot.processCount), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 518, "TOP   " + ShortenText(snapshot.topProcess.name, 17), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 542, "TYPE  " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.category)), 16), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 566, "SAFE  " + ShortenText(ToUpperAscii(ToDisplayToken(snapshot.topProcess.safety)), 16), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 590, "INTNT " + ShortenText(snapshot.intent.userState + "/" + snapshot.intent.appKind, 17), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 614, "FOCUS " + ShortenText(snapshot.intent.foregroundProcess, 17), RGB(170, 180, 195), gFontSmall);
-
-        DrawTextAt(memDC, 18, 662, "Runtime", RGB(230, 235, 245), gFontSection);
-        DrawTextAt(memDC, 18, 694, "MODE  " + FormatModeLabel(performanceMode), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 718, "MODEL " + to_string(aiPredictIntervalTicks) + " sec", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 742, string("DB    ") + (storageReady ? "ACTIVE" : "OFFLINE"), storageReady ? RGB(120, 220, 160) : RGB(240, 110, 95), gFontSmall);
-        DrawTextAt(memDC, 18, 766, "LABEL " + snapshot.scenarioLabel, RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 790, "PLAN  " + ShortenText(ToUpperAscii(ToDisplayToken(healPlan.status)), 16), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 814, "RDY   " + to_string(static_cast<int>(healPlan.readinessScore)) + "%", RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 838, "VRFY  " + ShortenText(ToUpperAscii(ToDisplayToken(healVerification.status)), 16), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 862, "POL   " + ShortenText(ToUpperAscii(ToDisplayToken(policyResult.levelName)), 16), RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 886, "HLTH  " + ShortenText(ToUpperAscii(ToDisplayToken(runtimeHealth.status)), 16), RuntimeHealthAccentColor(runtimeHealth.status), gFontSmall);
-        DrawTextAt(memDC, 18, 910, "BASE  " + ShortenText(ToUpperAscii(ToDisplayToken(baseline.status)), 16), RGB(180, 220, 255), gFontSmall);
-        DrawTextAt(memDC, 18, 934, "AUTO  " + ShortenText(ToUpperAscii(ToDisplayToken(autopilot.status)), 16), autopilot.active ? RGB(120, 220, 160) : RGB(170, 180, 195), gFontSmall);
-        DrawTextAt(memDC, 18, 958, "AGENT " + ShortenText(ToUpperAscii(ToDisplayToken(backgroundAgent.status)), 16), backgroundAgent.trayIconReady ? RGB(120, 220, 160) : RGB(255, 210, 120), gFontSmall);
-        DrawTextAt(memDC, 18, 982, "SIMULATION " + ShortenText(ToUpperAscii(ToDisplayToken(benchmarkProof.status)), 16), benchmarkProof.status == "PROOF_READY" ? RGB(120, 220, 160) : RGB(170, 180, 195), gFontSmall);
-
-        int mainX = sidebarW + pad;
-        int mainW = client.right - mainX - pad;
-
-        DrawTextAt(memDC, mainX, 16, "AI Monitoring Dashboard", RGB(238, 242, 249), gFontTitle);
-        DrawTextAt(memDC, mainX, 42, "Grafana-style view for live metrics, AI reliability, storage, and auto-heal readiness", RGB(140, 150, 165), gFontSmall);
-        RECT overviewTab = DashboardTabRect(mainX, 62, DashboardView::Overview);
-        RECT reliabilityTab = DashboardTabRect(mainX, 62, DashboardView::Reliability);
-        RECT runtimeTab = DashboardTabRect(mainX, 62, DashboardView::Runtime);
-        RECT autoHealTab = DashboardTabRect(mainX, 62, DashboardView::AutoHeal);
-        RECT autopilotTab = DashboardTabRect(mainX, 62, DashboardView::Autopilot);
-        RECT proofTab = DashboardTabRect(mainX, 62, DashboardView::Proof);
-        DrawDashboardTabRect(memDC, overviewTab, "Overview", g_dashboardView == DashboardView::Overview);
-        DrawDashboardTabRect(memDC, reliabilityTab, "AI Reliability", g_dashboardView == DashboardView::Reliability);
-        DrawDashboardTabRect(memDC, runtimeTab, "Runtime", g_dashboardView == DashboardView::Runtime);
-        DrawDashboardTabRect(memDC, autoHealTab, "Auto-Heal", g_dashboardView == DashboardView::AutoHeal);
-        DrawDashboardTabRect(memDC, autopilotTab, "Autopilot", g_dashboardView == DashboardView::Autopilot);
-        DrawDashboardTabRect(memDC, proofTab, "Impact", g_dashboardView == DashboardView::Proof);
-
-        RECT statusBadge{ client.right - 220, 18, client.right - 20, 56 };
-        DrawRoundedPanel(memDC, statusBadge, LevelFillColor(decisionLevel), LevelAccentColor(decisionLevel), 18);
-        DrawTextAt(memDC, client.right - 190, 29, DecisionEngine::ToString(decisionLevel), RGB(255, 255, 255), gFontSection);
-
-        int rowY = headerH + 12;
-        int cardH = 132;
-        int gap = 12;
-        int cardW = (mainW - (gap * 4)) / 5;
-
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 0, rowY, cardW, cardH, "CPU USAGE", to_string(static_cast<int>(snapshot.cpuUsage)) + "%", "Live CPU", snapshot.cpuUsage, RGB(52, 152, 219), false);
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 1, rowY, cardW, cardH, "MEMORY", to_string(static_cast<int>(snapshot.memoryUsage)) + "%", "Live memory", snapshot.memoryUsage, RGB(46, 204, 113), false);
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 2, rowY, cardW, cardH, "DISK FREE", to_string(static_cast<int>(snapshot.diskFree)) + "%", "Free disk", 100.0 - snapshot.diskFree, RGB(241, 196, 15), false);
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 3, rowY, cardW, cardH, "NETWORK", FormatRate(snapshot.netDownKBps), "Up: " + FormatRate(snapshot.netUpKBps), ClampDouble((snapshot.netDownKBps / 1024.0) * 100.0, 0.0, 100.0), RGB(155, 89, 182), false);
-        DrawMetricCard(memDC, mainX + (cardW + gap) * 4, rowY, cardW, cardH, "RISK SCORE", to_string(static_cast<int>(riskScore)) + "%", string(DecisionEngine::ToString(decisionLevel)), riskScore, LevelAccentColor(decisionLevel), criticalAlertActive);
-
-        int middleTop = rowY + cardH + 14;
-        int bottomH = 236;
-        int bottomTop = max(middleTop + 260, static_cast<int>(client.bottom) - bottomH - pad);
-        int middleH = max(260, bottomTop - middleTop - 14);
-        int reliabilityW = min(390, max(330, mainW / 4));
-        int graphW = mainW - reliabilityW - gap;
-
-        RECT graphRc{ mainX, middleTop, mainX + graphW, middleTop + middleH };
-        RECT reliabilityRc{ mainX + graphW + gap, middleTop, client.right - pad, middleTop + middleH };
-
-        int bottomGap = 12;
-        int bottomW = (mainW - (bottomGap * 3)) / 4;
-        RECT decisionRc{ mainX, bottomTop, mainX + bottomW, bottomTop + bottomH };
-        RECT runtimeRc{ decisionRc.right + bottomGap, bottomTop, decisionRc.right + bottomGap + bottomW, bottomTop + bottomH };
-        RECT healRc{ runtimeRc.right + bottomGap, bottomTop, runtimeRc.right + bottomGap + bottomW, bottomTop + bottomH };
-        RECT thresholdRc{ healRc.right + bottomGap, bottomTop, client.right - pad, bottomTop + bottomH };
-
-        if (g_dashboardView == DashboardView::Overview) {
-            DrawGraph(memDC, graphRc, cpuHist, memHist, diskHist);
-            DrawReliabilityPanel(memDC, reliabilityRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
-            DrawDecisionPanel(memDC, decisionRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
-            DrawRuntimePanel(memDC, runtimeRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
-            DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
-            DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
-        } else if (g_dashboardView == DashboardView::Reliability) {
-            RECT bigReliability{ mainX, middleTop, mainX + reliabilityW + 120, middleTop + middleH };
-            RECT decisionWide{ bigReliability.right + gap, middleTop, client.right - pad, middleTop + middleH };
-            DrawReliabilityPanel(memDC, bigReliability, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
-            DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
-            DrawPlaceholderWidePanel(memDC, decisionRc, "Model Contract", "Contract ai_reliability_v2", "50 features: resources, trends, spikes, recovery");
-            DrawThresholdPanel(memDC, runtimeRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
-            DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
-            DrawRuntimePanel(memDC, thresholdRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
-        } else if (g_dashboardView == DashboardView::Runtime) {
-            RECT runtimeWide{ mainX, middleTop, mainX + (mainW / 2) - gap, middleTop + middleH };
-            RECT thresholdWide{ runtimeWide.right + gap, middleTop, client.right - pad, middleTop + middleH };
-            DrawRuntimePanel(memDC, runtimeWide, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
-            DrawThresholdPanel(memDC, thresholdWide, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
-            DrawGraph(memDC, decisionRc, cpuHist, memHist, diskHist);
-            DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
-            DrawDecisionPanel(memDC, healRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
-            DrawAutoHealPanel(memDC, thresholdRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
-        } else if (g_dashboardView == DashboardView::AutoHeal) {
-            RECT healWide{ mainX, middleTop, mainX + (mainW / 2) - gap, middleTop + middleH };
-            RECT decisionWide{ healWide.right + gap, middleTop, client.right - pad, middleTop + middleH };
-            DrawAutoHealPanel(memDC, healWide, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
-            DrawDecisionPanel(memDC, decisionWide, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
-            DrawPlaceholderWidePanel(memDC, decisionRc, "Safety Policy", "Auto-heal execution is disabled", "Future healing needs allowlist, cooldown, confidence, and rollback checks");
-            DrawReliabilityPanel(memDC, runtimeRc, aiProb, aiConfidence, source, aiClass, aiReason, rootCause, modelReadiness, modelGeneratedAt, modelFeatureCount, decisionLevel);
-            DrawRuntimePanel(memDC, healRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
-            DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
-        } else if (g_dashboardView == DashboardView::Autopilot) {
-            const int autopilotWidth = (mainW * 3) / 5;
-            RECT autopilotWide{ mainX, middleTop, mainX + autopilotWidth, middleTop + middleH };
-            RECT agentWide{ autopilotWide.right + gap, middleTop, client.right - pad, middleTop + middleH };
-            DrawLowEndAutopilotPanel(memDC, autopilotWide, autopilot, gFontSection, gFontValue, gFontSmall);
-            DrawBackgroundAgentPanel(memDC, agentWide, backgroundAgent, gFontSection, gFontSmall);
-            DrawDecisionPanel(memDC, decisionRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
-            DrawRuntimePanel(memDC, runtimeRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
-            DrawAutoHealPanel(memDC, healRc, recommendedAction, safeToHeal, snapshot, actionTarget, safetyGate, blockedReason, actionConfidence, expectedOptimizationGain, cooldownRemainingSeconds, candidateCount, dryRun, healPlan, healVerification, policyResult);
-            DrawThresholdPanel(memDC, thresholdRc, cpuTh, memTh, diskTh, aiAlertTh, warningRiskThreshold, criticalRiskThreshold);
-        } else {
-            RECT proofWide{ mainX, middleTop, client.right - pad, middleTop + middleH };
-            DrawBenchmarkProofPanel(memDC, proofWide, benchmarkProof, gFontSection, gFontValue, gFontSmall);
-            DrawLowEndAutopilotPanel(memDC, decisionRc, autopilot, gFontSection, gFontValue, gFontSmall);
-            DrawBackgroundAgentPanel(memDC, runtimeRc, backgroundAgent, gFontSection, gFontSmall);
-            DrawDecisionPanel(memDC, healRc, decisionLevel, riskScore, anomalyScore, pressureScore, decisionSummary, rootCause, decisionRootCauseDetail, safetyGate);
-            DrawRuntimePanel(memDC, thresholdRc, performanceMode, aiPredictIntervalTicks, modelCacheTtlTicks, pendingWrites, storageReady, runtimeHealth, baseline);
+        DashboardUiState ui;
+        ui.system = snapshot;
+        ui.runtime = runtimeHealth;
+        ui.baseline = baseline;
+        ui.autopilot = autopilot;
+        ui.agent = backgroundAgent;
+        ui.benchmark = benchmarkProof;
+        ui.healPlan = healPlan;
+        ui.healVerification = healVerification;
+        ui.safetyPolicy = policyResult;
+        ui.cpuHistory = cpuHist;
+        ui.memoryHistory = memHist;
+        ui.diskHistory = diskHist;
+        {
+            lock_guard<mutex> lock(g_dataMutex);
+            ui.processes = g_processGenome;
+            ui.qoe = g_qoeSample;
+            ui.criticality = g_criticalityGraph;
+            ui.shadowPolicy = g_shadowPolicyDecision;
+            ui.onlinePolicy = g_onlinePolicyDecision;
+            ui.latencyHistory = g_inputLatencyHist;
         }
+        ui.aiProbability = aiProb;
+        ui.aiConfidence = aiConfidence;
+        ui.riskScore = riskScore;
+        ui.anomalyScore = anomalyScore;
+        ui.pressureScore = pressureScore;
+        ui.actionConfidence = actionConfidence;
+        ui.expectedGainMB = expectedOptimizationGain;
+        ui.modelFeatureCount = modelFeatureCount;
+        ui.candidateCount = candidateCount;
+        ui.cooldownSeconds = cooldownRemainingSeconds;
+        ui.cpuThreshold = cpuTh;
+        ui.memoryThreshold = memTh;
+        ui.diskThreshold = diskTh;
+        ui.warningThreshold = static_cast<int>(warningRiskThreshold);
+        ui.criticalThreshold = static_cast<int>(criticalRiskThreshold);
+        ui.predictIntervalSeconds = aiPredictIntervalTicks;
+        ui.cacheSeconds = modelCacheTtlTicks;
+        ui.pendingWrites = pendingWrites;
+        ui.storageReady = storageReady;
+        ui.alertActive = criticalAlertActive;
+        ui.dryRun = dryRun;
+        ui.actionExecutionEnabled = g_config.GetInt("ACTION_EXECUTION_ENABLED", 0) != 0;
+        ui.actionGlobalDisable = g_config.GetInt("ACTION_GLOBAL_DISABLE", 1) != 0;
+        ui.onlinePolicyEnabled = g_config.GetInt("ONLINE_POLICY_ENABLED", 0) != 0;
+        ui.onlinePolicyPromoted = g_config.GetInt("ONLINE_POLICY_PROMOTED", 0) != 0;
+        ui.browserIntegrationEnabled = g_config.GetInt("BROWSER_COOP_ENABLED", 0) != 0;
+        ui.bitsIntegrationEnabled = g_config.GetInt("BITS_COOP_ENABLED", 0) != 0;
+        ui.prefetchEnabled = g_config.GetInt("PREDICTIVE_PREFETCH_ENABLED", 0) != 0;
+        ui.riskLevel = DecisionEngine::ToString(decisionLevel);
+        ui.aiSource = source;
+        ui.aiClass = aiClass;
+        ui.aiReason = aiReason;
+        ui.modelReadiness = modelReadiness;
+        ui.modelGeneratedAt = modelGeneratedAt;
+        ui.decisionSummary = decisionSummary;
+        ui.decisionReason = g_decisionReason;
+        ui.rootCause = rootCause;
+        ui.rootCauseDetail = decisionRootCauseDetail;
+        ui.recommendedAction = recommendedAction;
+        ui.actionTarget = actionTarget;
+        ui.safetyGate = safetyGate;
+        ui.blockedReason = blockedReason;
+        ui.performanceMode = FormatModeLabel(performanceMode);
+        ui.policyMode = ToUpperAscii(ToDisplayToken(g_config.GetString("IMPACT_POLICY_MODE", "SHADOW")));
+        ui.modelVersion = modelFeatureCount > 0
+            ? to_string(modelFeatureCount) + "F " + ToUpperAscii(ToDisplayToken(modelReadiness))
+            : ToUpperAscii(ToDisplayToken(modelReadiness));
 
+        const DashboardUiFonts fonts{gFontTitle, gFontSection, gFontValue, gFontSmall};
+        DrawModernDashboard(memDC, client, ui, g_dashboardView, fonts);
         BitBlt(hdc, 0, 0, client.right, client.bottom, memDC, 0, 0, SRCCOPY);
 
         SelectObject(memDC, oldBmp);
@@ -2411,36 +1859,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         return 1;
 
     case WM_LBUTTONDOWN: {
-        int x = GET_X_LPARAM(lParam);
-        int y = GET_Y_LPARAM(lParam);
+        const int x = GET_X_LPARAM(lParam);
+        const int y = GET_Y_LPARAM(lParam);
         RECT client;
         GetClientRect(hwnd, &client);
-        const int sidebarW = 238;
-        const int pad = 16;
-        int mainX = sidebarW + pad;
-
-        DashboardView nextView = g_dashboardView;
-        if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::Overview), x, y)) {
-            nextView = DashboardView::Overview;
-        } else if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::Reliability), x, y)) {
-            nextView = DashboardView::Reliability;
-        } else if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::Runtime), x, y)) {
-            nextView = DashboardView::Runtime;
-        } else if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::AutoHeal), x, y)) {
-            nextView = DashboardView::AutoHeal;
-        } else if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::Autopilot), x, y)) {
-            nextView = DashboardView::Autopilot;
-        } else if (PtInRectSimple(DashboardTabRect(mainX, 62, DashboardView::Proof), x, y)) {
-            nextView = DashboardView::Proof;
-        }
-
+        const DashboardView nextView = HitTestDashboardNavigation(client, x, y, g_dashboardView);
         if (nextView != g_dashboardView) {
             g_dashboardView = nextView;
-            InvalidateRect(hwnd, NULL, TRUE);
+            InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
     }
-
     case WM_TRAYICON_MESSAGE:
         if (lParam == WM_LBUTTONDBLCLK) {
             ShowDashboardWindow(hwnd);
@@ -2483,7 +1912,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_GETMINMAXINFO: {
         auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
         info->ptMinTrackSize.x = 1180;
-        info->ptMinTrackSize.y = 900;
+        info->ptMinTrackSize.y = 720;
         return 0;
     }
 
@@ -2562,26 +1991,36 @@ int main() {
 
     gFontTitle = CreateFontW(-27, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI Variable Display");
     gFontSection = CreateFontW(-18, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI Variable Text");
     gFontValue = CreateFontW(-34, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI Variable Display");
     gFontSmall = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI Variable Text");
+
+    RECT workArea{};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
+        workArea = RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    }
+    const int workWidth = static_cast<int>(workArea.right - workArea.left);
+    const int workHeight = static_cast<int>(workArea.bottom - workArea.top);
+    const int windowWidth = max(1180, min(1600, workWidth - 24));
+    const int windowHeight = max(720, min(940, workHeight - 24));
+    const int windowX = static_cast<int>(workArea.left) + max(0, (workWidth - windowWidth) / 2);
+    const int windowY = static_cast<int>(workArea.top) + max(0, (workHeight - windowHeight) / 2);
 
     HWND hwnd = CreateWindowExW(
         0,
         CLASS_NAME,
-        L"AI Monitoring Dashboard",
+        L"PredictiveAutoHeal Control Center",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1440, 1020,
+        windowX, windowY, windowWidth, windowHeight,
         NULL, NULL, hInstance, NULL
     );
-
     if (!hwnd) {
         MessageBoxA(NULL, "Failed to create window.", "Error", MB_OK | MB_ICONERROR);
         return 1;

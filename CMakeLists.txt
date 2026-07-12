@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set_source_files_properties(sqlite3.c PROPERTIES LANGUAGE C COMPILE_OPTIONS "/W0")
 
 add_executable(PredictiveAutoHeal
+    ModernDashboardUI.cpp
     main.cpp
     ActionVerification.cpp
     AdaptiveBaseline.cpp
@@ -24,7 +25,6 @@ add_executable(PredictiveAutoHeal
     MetricsPipeline.cpp
     MetricsStorage.cpp
     PerformanceIntelligence.cpp
-    StageControlCenterUI.cpp
     RuntimeHealth.cpp
     SafeOnlinePolicy.cpp
     SafetyPolicy.cpp
