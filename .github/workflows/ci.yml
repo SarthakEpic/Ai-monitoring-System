@@ -22,7 +22,7 @@ jobs:
       - name: Run native safety and integration tests
         run: ctest --test-dir build -C Debug --output-on-failure
       - name: Run Python model and benchmark tests
-        run: python -m unittest test_model_contract.py test_benchmark_lab.py test_dataset_contract.py test_training_safety.py test_grouped_temporal_split.py
+        run: python -m unittest test_model_contract.py test_benchmark_lab.py test_dataset_contract.py test_training_safety.py test_grouped_temporal_split.py test_episode_builder.py
       - name: Check whitespace errors
         run: git diff --check
       - name: Package dry run

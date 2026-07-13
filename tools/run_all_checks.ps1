@@ -31,7 +31,7 @@ try {
         ctest --test-dir build -C $Configuration --output-on-failure
     }
     Invoke-Checked -Name "Python model and benchmark tests" -Command {
-        python -m unittest test_model_contract.py test_benchmark_lab.py test_dataset_contract.py test_training_safety.py test_grouped_temporal_split.py
+        python -m unittest test_model_contract.py test_benchmark_lab.py test_dataset_contract.py test_training_safety.py test_grouped_temporal_split.py test_episode_builder.py
     }
     Invoke-Checked -Name "Whitespace/static diff check" -Command { git diff --check }
 
