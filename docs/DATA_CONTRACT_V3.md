@@ -29,3 +29,7 @@ An episode records workload class, start/end reason, stable baseline, observatio
 - `python/dataset_schema_v3.py`
 
 The Python validator is deliberately dependency-free and is exercised by `test_dataset_contract.py`. JSON Schema files remain portable documentation and interchange contracts; production ingestion must call the validator before data enters training or certification workflows.
+
+## Evaluation
+
+Leakage checks, label-provenance gates, baseline comparisons, episode metrics, calibration/risk-coverage reporting, and device/workload/application slices are defined in `docs/EVALUATION_FOUNDATION.md` and exercised by `test_evaluation_pipeline.py`.

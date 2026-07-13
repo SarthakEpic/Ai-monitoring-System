@@ -55,7 +55,7 @@ def label_future_window(future: np.ndarray, thresholds: LabelThresholds) -> str:
 def label_to_risk(label: str) -> float:
     return {
         "NORMAL": 18.0,
-        "RECOVERY": 38.0,
+        "RECOVERY": 18.0,
         "WARNING": 66.0,
         "CRITICAL": 92.0,
     }.get(label, 50.0)

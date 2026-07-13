@@ -76,7 +76,11 @@ void VerifyCriticalityGraph() {
 }
 
 void VerifyWorkloadPhases() {
-    WorkloadPhaseDetector detector;
+    WorkloadPhaseDetector detector([] { return 180001ULL; }, [](SYSTEM_POWER_STATUS& status) {
+        status.ACLineStatus = AC_LINE_ONLINE;
+        status.BatteryLifePercent = 100;
+        return true;
+    });
     SystemSnapshot snapshot = BaseSnapshot();
     snapshot.intent.appKind = "COMMUNICATION";
     Require(

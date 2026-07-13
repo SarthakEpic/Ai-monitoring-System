@@ -73,6 +73,32 @@ void RuntimeHealthMonitor::RecordAlert() {
     ++alerts_;
 }
 
+void RuntimeHealthMonitor::RecordObserverMetrics(
+    double collectorP95Ms,
+    double inferenceP95Ms,
+    double processCpuPercent,
+    double processIoBytesPerSecond,
+    double wakeupsPerSecond,
+    double workingSetMb,
+    int pendingWrites,
+    const string& observerState
+) {
+    collectorP95Ms_ = max(0.0, collectorP95Ms);
+    inferenceP95Ms_ = max(0.0, inferenceP95Ms);
+    processCpuPercent_ = max(0.0, processCpuPercent);
+    processIoBytesPerSecond_ = max(0.0, processIoBytesPerSecond);
+    wakeupsPerSecond_ = max(0.0, wakeupsPerSecond);
+    workingSetMb_ = max(0.0, workingSetMb);
+    pendingWrites_ = max(0, pendingWrites);
+    observerState_ = observerState.empty() ? "unknown" : observerState;
+}
+
+void RuntimeHealthMonitor::RecordStorageBatchLatency(double latencyMs) {
+    if (latencyMs >= 0.0) {
+        storageBatchLatencyMs_ = latencyMs;
+    }
+}
+
 RuntimeHealthSample RuntimeHealthMonitor::Snapshot(
     long long timestamp,
     const string& currentSource,
@@ -101,6 +127,15 @@ RuntimeHealthSample RuntimeHealthMonitor::Snapshot(
     sample.storageReady = storageReady;
     sample.avgPredictionLatencyMs = avgPredictionLatencyMs_;
     sample.lastPredictionLatencyMs = lastPredictionLatencyMs_;
+    sample.collectorP95Ms = collectorP95Ms_;
+    sample.inferenceP95Ms = inferenceP95Ms_;
+    sample.processCpuPercent = processCpuPercent_;
+    sample.processIoBytesPerSecond = processIoBytesPerSecond_;
+    sample.wakeupsPerSecond = wakeupsPerSecond_;
+    sample.workingSetMb = workingSetMb_;
+    sample.storageBatchLatencyMs = storageBatchLatencyMs_;
+    sample.pendingWrites = pendingWrites_;
+    sample.observerState = observerState_;
     sample.modelSuccessRate = Percent(modelSuccesses_, modelAttempts_, 100.0);
     sample.fallbackRate = Percent(fallbackPredictions_, max(1, totalCycles_ - warmupPredictions_), 0.0);
     sample.storageSuccessRate = Percent(storageWrites_ - storageFailures_, storageWrites_, storageReady ? 100.0 : 0.0);

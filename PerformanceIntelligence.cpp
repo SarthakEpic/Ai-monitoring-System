@@ -9,6 +9,7 @@
 #include <cmath>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
 
 #include "sqlite3.h"
 
@@ -77,12 +78,15 @@ const char* ToString(WorkloadPhase phase) {
     }
 }
 
+WorkloadPhaseDetector::WorkloadPhaseDetector(UptimeProvider uptimeProvider, PowerStatusProvider powerStatusProvider)
+    : uptimeProvider_(std::move(uptimeProvider)), powerStatusProvider_(std::move(powerStatusProvider)) {}
+
 WorkloadPhase WorkloadPhaseDetector::Detect(const SystemSnapshot& snapshot, const QoeTelemetrySample* telemetry) const {
-    if (GetTickCount64() < 180000) return WorkloadPhase::PostBootStabilization;
+    if (uptimeProvider_() < 180000) return WorkloadPhase::PostBootStabilization;
     if (snapshot.intent.userState == "AWAY" || snapshot.intent.idleSeconds >= 300.0) return WorkloadPhase::UserIdle;
 
     SYSTEM_POWER_STATUS power{};
-    if (GetSystemPowerStatus(&power) && power.ACLineStatus == 0 && power.BatteryLifePercent <= 25) {
+    if (powerStatusProvider_(power) && power.ACLineStatus == 0 && power.BatteryLifePercent <= 25) {
         return WorkloadPhase::BatterySaver;
     }
     if (snapshot.intent.appKind == "COMMUNICATION") return WorkloadPhase::VideoMeeting;

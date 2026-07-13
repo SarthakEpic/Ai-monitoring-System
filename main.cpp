@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <psapi.h>
 
 #include <algorithm>
 #include <atomic>
@@ -28,17 +29,25 @@
 #include "CooperativeIntegrations.h"
 #include "AppConfig.h"
 #include "DecisionEngine.h"
+#include "EpisodeTelemetryStore.h"
 #include "HealingVerifier.h"
 #include "ImpactLearning.h"
+#include "InferenceProtocol.h"
 #include "LowEndAutopilot.h"
 #include "MetricsPipeline.h"
+#include "MonitoringScheduler.h"
 #include "PerformanceIntelligence.h"
 #include "RuntimeFoundation.h"
+#include "RuntimeOrchestrator.h"
+#include "RuntimeStateStore.h"
+#include "ThreadedRuntimeComponent.h"
 #include "RuntimeHealth.h"
+#include "RollingFeatureCache.h"
 #include "SafeOnlinePolicy.h"
 #include "SafetyPolicy.h"
 #include "MetricsStorage.h"
 #include "ModernDashboardUI.h"
+#include "ObserverEffectGovernor.h"
 #include "SystemMetrics.h"
 
 using namespace std;
@@ -163,6 +172,8 @@ BackgroundAgentResult g_backgroundAgentResult;
 BenchmarkProofResult g_benchmarkProofResult;
 atomic<bool> g_running = true;
 thread g_monitorThread;
+RuntimeStateStore g_runtimeStateStore;
+unique_ptr<RuntimeOrchestrator> g_runtimeOrchestrator;
 long long g_tick = 0;
 DashboardView g_dashboardView = DashboardView::Overview;
 PROCESS_INFORMATION g_inferenceServiceProcess{};
@@ -173,23 +184,6 @@ atomic<int> g_quickRestoreRequests = 0;
 string g_quickRestoreStatus = "IDLE";
 bool g_agentStartMinimized = false;
 UINT g_taskbarCreatedMessage = 0;
-
-template <typename T>
-string DequeToJsonArray(const deque<T>& values) {
-    ostringstream oss;
-    oss << "[";
-    for (size_t i = 0; i < values.size(); ++i) {
-        if (i) oss << ",";
-        oss << fixed << setprecision(4) << values[i];
-    }
-    oss << "]";
-    return oss.str();
-}
-
-void PushHistory(deque<double>& hist, double value, size_t maxSize) {
-    hist.push_back(value);
-    if (hist.size() > maxSize) hist.pop_front();
-}
 
 double ClampDouble(double value, double lo, double hi) {
     return max(lo, min(hi, value));
@@ -264,6 +258,41 @@ string ResolvePerformanceMode() {
     return mode;
 }
 
+string NarrowWide(const std::wstring& text) {
+    if (text.empty()) return "";
+    const int required = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    std::string value(static_cast<size_t>(required), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), value.data(), required, nullptr, nullptr);
+    return value;
+}
+
+DeviceSupportDescriptor BuildDeviceSupportDescriptor() {
+    wchar_t computerName[MAX_COMPUTERNAME_LENGTH + 1]{};
+    DWORD computerNameLength = MAX_COMPUTERNAME_LENGTH + 1;
+    GetComputerNameW(computerName, &computerNameLength);
+    SYSTEM_INFO systemInfo{};
+    GetNativeSystemInfo(&systemInfo);
+    MEMORYSTATUSEX memory{};
+    memory.dwLength = sizeof(memory);
+    GlobalMemoryStatusEx(&memory);
+    SYSTEM_POWER_STATUS power{};
+    GetSystemPowerStatus(&power);
+
+    const unsigned long long memoryMb = memory.ullTotalPhys / (1024ULL * 1024ULL);
+    const std::string hostToken = NarrowWide(std::wstring(computerName, computerNameLength));
+    DeviceSupportDescriptor descriptor;
+    descriptor.deviceId = EpisodeTelemetryStore::PseudonymizeLocalIdentifier("aegis-device:" + hostToken);
+    descriptor.hardwareFingerprint = EpisodeTelemetryStore::PseudonymizeLocalIdentifier(
+        hostToken + ":" + std::to_string(systemInfo.dwNumberOfProcessors) + ":" + std::to_string(memoryMb)
+    );
+    descriptor.windowsBuildFamily = "WINDOWS_BUILD_UNVERIFIED";
+    descriptor.cpuCoreTier = std::to_string(systemInfo.dwNumberOfProcessors) + "_LOGICAL";
+    descriptor.ramTier = std::to_string((memoryMb + 511ULL) / 1024ULL) + "GB";
+    descriptor.storageTier = "UNCLASSIFIED";
+    descriptor.gpuTier = "UNCLASSIFIED";
+    descriptor.powerMode = power.ACLineStatus == AC_LINE_ONLINE ? "AC" : "BATTERY_OR_UNKNOWN";
+    return descriptor;
+}
 wstring GetExecutableDir();
 string ResolveExistingPathString(const vector<fs::path>& candidates);
 
@@ -324,144 +353,6 @@ string ResolveExistingPathString(const vector<fs::path>& candidates) {
         }
     }
     return candidates.empty() ? "" : candidates.front().string();
-}
-
-struct ModelPrediction {
-    double risk = -1.0;
-    double confidence = 0.0;
-    string predictedClass = "UNKNOWN";
-    string reason = "N/A";
-    string rootCause = "unknown";
-    string rootSeverity = "normal";
-    string modelReadiness = "unknown";
-    string modelGeneratedAt = "unknown";
-    string recommendedAction = "monitor_only";
-    bool safeToHeal = false;
-    int featureCount = 0;
-};
-
-string ExtractJsonString(const string& text, const string& key, const string& fallback = "") {
-    const string needle = "\"" + key + "\":";
-    size_t pos = text.find(needle);
-    if (pos == string::npos) return fallback;
-    pos += needle.size();
-    while (pos < text.size() && isspace(static_cast<unsigned char>(text[pos]))) ++pos;
-    if (pos >= text.size() || text[pos] != '"') return fallback;
-    ++pos;
-
-    string value;
-    bool escaped = false;
-    for (; pos < text.size(); ++pos) {
-        char ch = text[pos];
-        if (escaped) {
-            value.push_back(ch);
-            escaped = false;
-        } else if (ch == '\\') {
-            escaped = true;
-        } else if (ch == '"') {
-            break;
-        } else {
-            value.push_back(ch);
-        }
-    }
-    return value.empty() ? fallback : value;
-}
-
-double ExtractJsonDouble(const string& text, const string& key, double fallback = 0.0) {
-    const string needle = "\"" + key + "\":";
-    size_t pos = text.find(needle);
-    if (pos == string::npos) return fallback;
-    pos += needle.size();
-    while (pos < text.size() && isspace(static_cast<unsigned char>(text[pos]))) ++pos;
-    size_t end = pos;
-    while (end < text.size() && (isdigit(static_cast<unsigned char>(text[end])) || text[end] == '-' || text[end] == '+' || text[end] == '.')) {
-        ++end;
-    }
-    try {
-        return stod(text.substr(pos, end - pos));
-    } catch (...) {
-        return fallback;
-    }
-}
-
-bool ExtractJsonBool(const string& text, const string& key, bool fallback = false) {
-    const string needle = "\"" + key + "\":";
-    size_t pos = text.find(needle);
-    if (pos == string::npos) return fallback;
-    pos += needle.size();
-    while (pos < text.size() && isspace(static_cast<unsigned char>(text[pos]))) ++pos;
-    if (text.compare(pos, 4, "true") == 0) return true;
-    if (text.compare(pos, 5, "false") == 0) return false;
-    return fallback;
-}
-
-ModelPrediction ParseModelPredictionText(const string& text) {
-    ModelPrediction failed;
-    try {
-        ModelPrediction prediction;
-        if (!text.empty() && text.front() == '{') {
-            prediction.risk = ExtractJsonDouble(text, "risk", ExtractJsonDouble(text, "probability", -1.0));
-            prediction.confidence = ExtractJsonDouble(text, "confidence", 0.0);
-            prediction.predictedClass = ExtractJsonString(text, "class", "UNKNOWN");
-            prediction.reason = ExtractJsonString(text, "reason", "N/A");
-            prediction.rootCause = ExtractJsonString(text, "primary", "unknown");
-            prediction.rootSeverity = ExtractJsonString(text, "severity", "normal");
-            prediction.modelReadiness = ExtractJsonString(text, "model_readiness", "unknown");
-            prediction.modelGeneratedAt = ExtractJsonString(text, "model_generated_at", "unknown");
-            prediction.featureCount = static_cast<int>(ExtractJsonDouble(text, "feature_count", 0.0));
-            prediction.recommendedAction = ExtractJsonString(text, "recommended_action", "monitor_only");
-            prediction.safeToHeal = ExtractJsonBool(text, "safe_to_heal", false);
-        } else {
-            prediction.risk = stod(text);
-            prediction.confidence = 55.0;
-            prediction.predictedClass = prediction.risk >= 75.0 ? "CRITICAL" : (prediction.risk >= 55.0 ? "WARNING" : "NORMAL");
-            prediction.reason = "legacy model probability";
-            prediction.rootCause = "legacy_probability";
-        }
-
-        if (prediction.risk < 0.0 || prediction.risk > 100.0) return failed;
-        prediction.confidence = ClampDouble(prediction.confidence, 0.0, 100.0);
-        return prediction;
-    } catch (...) {
-        return failed;
-    }
-}
-
-void WriteRuntimeFeaturesJson(
-    const wstring& outputPath,
-    const deque<double>& cpuHist,
-    const deque<double>& memHist,
-    const deque<double>& diskHist,
-    const deque<double>& netHist,
-    const deque<double>& processHist,
-    const deque<double>& topCpuHist,
-    const deque<double>& topMemHist,
-    int cpuTh,
-    int memTh,
-    int diskTh
-) {
-    const wstring tempPath = outputPath + L".tmp";
-    ofstream file(tempPath, ios::trunc);
-    if (!file) return;
-
-    file << "{\n";
-    file << "  \"window\": " << AI_WINDOW << ",\n";
-    file << "  \"cpu_threshold\": " << cpuTh << ",\n";
-    file << "  \"mem_threshold\": " << memTh << ",\n";
-    file << "  \"disk_threshold\": " << diskTh << ",\n";
-    file << "  \"cpu_history\": " << DequeToJsonArray(cpuHist) << ",\n";
-    file << "  \"mem_history\": " << DequeToJsonArray(memHist) << ",\n";
-    file << "  \"disk_history\": " << DequeToJsonArray(diskHist) << ",\n";
-    file << "  \"net_history\": " << DequeToJsonArray(netHist) << ",\n";
-    file << "  \"process_history\": " << DequeToJsonArray(processHist) << ",\n";
-    file << "  \"top_process_cpu_history\": " << DequeToJsonArray(topCpuHist) << ",\n";
-    file << "  \"top_process_mem_history\": " << DequeToJsonArray(topMemHist) << "\n";
-    file << "}\n";
-    file.close();
-
-    if (!MoveFileExW(tempPath.c_str(), outputPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileW(tempPath.c_str());
-    }
 }
 
 void ShowAlert(const string& message) {
@@ -851,6 +742,26 @@ ModelPrediction ReadServicePrediction() {
     return ParseModelPredictionText(text);
 }
 
+double ReadCurrentProcessCpuTimeMs() {
+    FILETIME creation{};
+    FILETIME exit{};
+    FILETIME kernel{};
+    FILETIME user{};
+    if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) return 0.0;
+    ULARGE_INTEGER kernelTicks{};
+    kernelTicks.LowPart = kernel.dwLowDateTime;
+    kernelTicks.HighPart = kernel.dwHighDateTime;
+    ULARGE_INTEGER userTicks{};
+    userTicks.LowPart = user.dwLowDateTime;
+    userTicks.HighPart = user.dwHighDateTime;
+    return static_cast<double>(kernelTicks.QuadPart + userTicks.QuadPart) / 10000.0;
+}
+double ReadCurrentProcessIoBytes() {
+    IO_COUNTERS counters{};
+    if (!GetProcessIoCounters(GetCurrentProcess(), &counters)) return 0.0;
+    return static_cast<double>(counters.ReadTransferCount + counters.WriteTransferCount + counters.OtherTransferCount);
+}
+
 void MonitorThread(HWND hwnd) {
     WindowsMetricsCollector collector;
     if (!collector.Initialize()) return;
@@ -866,6 +777,16 @@ void MonitorThread(HWND hwnd) {
     AdaptiveSamplingController qoeSampling(qoeSamplingConfig);
     CollectorCostRegistry collectorCosts;
     collectorCosts.Configure("qoe", SamplingTier::Tier2Focused, qoeSamplingConfig.elevatedRiskIntervalMs, qoeSamplingConfig.maximumFocusedBurstMs);
+    ObserverEffectConfig observerConfig;
+    observerConfig.maximumCollectorP95Ms = std::max(1.0, g_config.GetDouble("OBSERVER_MAX_COLLECTOR_P95_MS", 15.0));
+    observerConfig.maximumInferenceP95Ms = std::max(1.0, g_config.GetDouble("OBSERVER_MAX_INFERENCE_P95_MS", 20.0));
+    observerConfig.maximumProcessCpuPercent = std::max(0.1, g_config.GetDouble("OBSERVER_MAX_PROCESS_CPU_PERCENT", 1.0));
+    observerConfig.maximumProcessIoBytesPerSecond = std::max(1024.0, g_config.GetDouble("OBSERVER_MAX_PROCESS_IO_BPS", 1048576.0));
+    observerConfig.maximumWakeupsPerSecond = std::max(0.1, g_config.GetDouble("OBSERVER_MAX_WAKEUPS_PER_SEC", 2.0));
+    observerConfig.maximumWorkingSetMb = std::max(16.0, g_config.GetDouble("OBSERVER_MAX_WORKING_SET_MB", 100.0));
+    observerConfig.maximumPendingWrites = static_cast<size_t>(std::max(1, g_config.GetInt("OBSERVER_MAX_PENDING_WRITES", 64)));
+    ObserverEffectGovernor observerGovernor(observerConfig);
+    EvidenceBudgetScheduler evidenceScheduler(g_config.GetDouble("EVIDENCE_MIN_VALUE_PER_COST", 0.20));
     PerformanceCriticalityEngine criticalityEngine;
     WorkloadProtectionEngine workloadProtectionEngine;
     IntegrationCapabilityDetector integrationCapabilityDetector;
@@ -881,6 +802,16 @@ void MonitorThread(HWND hwnd) {
     const bool qoeCollectorReady = qoeCollector.Initialize(qoeInitializationError);
     string qoeJournalError;
     const bool qoeJournalReady = qoeJournal.Open((fs::path(GetExecutableDir()) / L"monitor.db").string(), qoeJournalError);
+    EpisodeTelemetryStore episodeTelemetryStore;
+    std::string episodeTelemetryError;
+    const bool episodeTelemetryReady = episodeTelemetryStore.Open(
+        (fs::path(GetExecutableDir()) / L"monitor.db").string(),
+        BuildDeviceSupportDescriptor(),
+        episodeTelemetryError
+    );
+    if (!episodeTelemetryReady) {
+        AppendRuntimeLog("episode_telemetry_open_failed", {{"reason", episodeTelemetryError}});
+    }
     WorkloadContextEncoder impactContextEncoder;
     ContextualImpactModel impactModel;
     ShadowContextualPolicy shadowImpactPolicy;
@@ -965,15 +896,26 @@ void MonitorThread(HWND hwnd) {
     QoeTelemetrySample lastQoeSample;
     bool hasQoeSample = false;
     DWORD lastQoeForegroundPid = 0;
+    string lastObserverEffectReason;
+    RollingFeatureCache featureCache(HISTORY_SIZE);
+    RollingPercentileWindow inferenceLatencyWindow(60);
+    ProcessCpuUsageTracker monitorProcessCpu;
+    CumulativeRateTracker monitorIoRate;
+    CumulativeRateTracker monitorWakeupRate;
+    unsigned long long monitorWakeups = 0;
+    MonitoringScheduler monitorScheduler;
 
     while (g_running) {
-        this_thread::sleep_for(seconds(1));
-        if (!g_running) break;
+        if (!monitorScheduler.WaitForNextTick(g_running, 1000)) break;
 
         SystemSnapshot snapshot = collector.Collect();
         snapshot.scenarioLabel = ReadScenarioLabel();
         WorkloadPhase workloadPhase = workloadDetector.Detect(snapshot);
         const long long nowMs = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+        const unsigned int logicalProcessors = static_cast<unsigned int>(std::max<DWORD>(1, GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)));
+        const double monitorProcessCpuPercent = monitorProcessCpu.Observe(nowMs, ReadCurrentProcessCpuTimeMs(), logicalProcessors);
+        const double monitorIoBytesPerSecond = monitorIoRate.Observe(nowMs, ReadCurrentProcessIoBytes());
+        const double monitorWakeupsPerSecond = monitorWakeupRate.Observe(nowMs, static_cast<double>(++monitorWakeups));
         QoeTelemetrySample qoeSample;
         bool qoeCaptured = false;
         if (qoeCollectorReady) {
@@ -984,7 +926,41 @@ void MonitorThread(HWND hwnd) {
             samplingInputs.dataInvalid = false;
             samplingInputs.safetyEvent = samplingInputs.severePressure;
             const AdaptiveSamplingDecision samplingDecision = qoeSampling.Next(nowMs, samplingInputs);
-            if (samplingDecision.capture) {
+            const CollectorCostReport qoeCost = collectorCosts.Report("qoe");
+            PROCESS_MEMORY_COUNTERS processMemory{};
+            processMemory.cb = sizeof(processMemory);
+            GetProcessMemoryInfo(GetCurrentProcess(), &processMemory, sizeof(processMemory));
+            ObserverEffectSample observerSample;
+            observerSample.collectorP95Ms = qoeCost.p95DurationMs;
+            observerSample.inferenceP95Ms = inferenceLatencyWindow.P95();
+            observerSample.processCpuPercent = monitorProcessCpuPercent;
+            observerSample.processIoBytesPerSecond = monitorIoBytesPerSecond;
+            observerSample.wakeupsPerSecond = monitorWakeupsPerSecond;
+            observerSample.workingSetMb = static_cast<double>(processMemory.WorkingSetSize) / (1024.0 * 1024.0);
+            observerSample.pendingWrites = g_pipeline.PendingCount();
+            const ObserverEffectDecision observerDecision = observerGovernor.Observe(observerSample);
+            g_runtimeHealth.RecordObserverMetrics(
+                observerSample.collectorP95Ms,
+                observerSample.inferenceP95Ms,
+                observerSample.processCpuPercent,
+                observerSample.processIoBytesPerSecond,
+                observerSample.wakeupsPerSecond,
+                observerSample.workingSetMb,
+                static_cast<int>(observerSample.pendingWrites),
+                observerDecision.reason
+            );
+            if (observerDecision.reason != lastObserverEffectReason) {
+                AppendRuntimeLog("observer_effect_state", {{"reason", observerDecision.reason}, {"over_budget", observerDecision.overBudget ? "1" : "0"}});
+                lastObserverEffectReason = observerDecision.reason;
+            }
+            EvidenceCandidate evidenceCandidate;
+            evidenceCandidate.tier = samplingDecision.tier;
+            evidenceCandidate.expectedRiskReduction = samplingInputs.severePressure ? 100.0 : samplingInputs.elevatedRisk ? 20.0 : 1.0;
+            evidenceCandidate.estimatedCpuCost = std::max(0.1, qoeCost.p95DurationMs / 10.0);
+            evidenceCandidate.estimatedLatencyCostMs = qoeCost.p95DurationMs;
+            evidenceCandidate.safetyRequired = samplingInputs.safetyEvent || samplingInputs.severePressure;
+            const EvidenceBudgetDecision evidenceDecision = evidenceScheduler.Decide(evidenceCandidate, observerDecision);
+            if (samplingDecision.capture && evidenceDecision.collect) {
                 qoeSample = qoeCollector.Capture(snapshot, workloadPhase);
                 workloadPhase = workloadDetector.Detect(snapshot, &qoeSample);
                 qoeSample.workload = workloadPhase;
@@ -1019,7 +995,24 @@ void MonitorThread(HWND hwnd) {
             if (!qoeSaved) AppendRuntimeLog("qoe_storage_write_failed", {{"reason", qoeWriteError}});
             if ((g_tick % 300) == 0) qoeJournal.EnforceRetention(10000, 50000, qoeWriteError);
         }
-
+        if (episodeTelemetryReady) {
+            EpisodeTelemetryInput episodeInput;
+            episodeInput.snapshot = snapshot;
+            episodeInput.qoe = qoeSample;
+            episodeInput.workload = workloadPhase;
+            episodeInput.qoeCaptured = qoeCaptured;
+            episodeInput.collectorReady = qoeCollectorReady;
+            episodeInput.runtimeMode = ToString(runtimeMode);
+            episodeInput.featureSourceVersion = "qoe-pdh-winapi-v3";
+            std::string episodeWriteError;
+            if (!episodeTelemetryStore.Record(episodeInput, episodeWriteError)) {
+                AppendRuntimeLog("episode_telemetry_write_failed", {{"reason", episodeWriteError}});
+            }
+            if ((g_tick % 300) == 0) {
+                const long long retentionMs = static_cast<long long>(std::max(1, g_config.GetInt("EPISODE_RETENTION_DAYS", 14))) * 24LL * 60LL * 60LL * 1000LL;
+                episodeTelemetryStore.EnforceRetention(nowMs - retentionMs, episodeWriteError);
+            }
+        }
         deque<double> cpuCopy, memCopy, diskCopy, netCopy, processCopy, topCpuCopy, topMemCopy;
         double aiProbLocal = 0.0;
         double aiConfidenceLocal = 0.0;
@@ -1027,6 +1020,16 @@ void MonitorThread(HWND hwnd) {
         string reasonLocal = "Collecting baseline";
         bool alertLocal = false;
         DecisionResult decisionResult;
+        const RollingFeatureSnapshot featureSnapshot = featureCache.Push({
+            snapshot.cpuUsage,
+            snapshot.memoryUsage,
+            snapshot.diskFree,
+            snapshot.netDownKBps + snapshot.netUpKBps,
+            static_cast<double>(snapshot.processCount),
+            snapshot.topProcess.cpuPercent,
+            snapshot.topProcess.memoryMB,
+            qoeSample.inputAvailable ? qoeSample.inputResponseMs : snapshot.netDownKBps,
+        });
 
         {
             lock_guard<mutex> lock(g_dataMutex);
@@ -1063,28 +1066,43 @@ void MonitorThread(HWND hwnd) {
             g_criticalityGraph = criticalityGraph;
             g_runtimeMode = runtimeMode;
 
-            PushHistory(g_cpuHist, snapshot.cpuUsage, HISTORY_SIZE);
-            PushHistory(g_memHist, snapshot.memoryUsage, HISTORY_SIZE);
-            PushHistory(g_diskHist, snapshot.diskFree, HISTORY_SIZE);
-            PushHistory(g_netHist, snapshot.netDownKBps + snapshot.netUpKBps, HISTORY_SIZE);
-            PushHistory(g_processHist, static_cast<double>(snapshot.processCount), HISTORY_SIZE);
-            PushHistory(g_topCpuHist, snapshot.topProcess.cpuPercent, HISTORY_SIZE);
-            PushHistory(g_topMemHist, snapshot.topProcess.memoryMB, HISTORY_SIZE);
-            PushHistory(g_inputLatencyHist, qoeSample.inputAvailable ? qoeSample.inputResponseMs : snapshot.netDownKBps,
-                        HISTORY_SIZE);
+            g_cpuHist = featureSnapshot.cpu;
+            g_memHist = featureSnapshot.memory;
+            g_diskHist = featureSnapshot.diskFree;
+            g_netHist = featureSnapshot.network;
+            g_processHist = featureSnapshot.processCount;
+            g_topCpuHist = featureSnapshot.topProcessCpu;
+            g_topMemHist = featureSnapshot.topProcessMemory;
+            g_inputLatencyHist = featureSnapshot.responsivenessProxy;
 
-            cpuCopy = g_cpuHist;
-            memCopy = g_memHist;
-            diskCopy = g_diskHist;
-            netCopy = g_netHist;
-            processCopy = g_processHist;
-            topCpuCopy = g_topCpuHist;
-            topMemCopy = g_topMemHist;
-        }
+            cpuCopy = featureSnapshot.cpu;
+            memCopy = featureSnapshot.memory;
+            diskCopy = featureSnapshot.diskFree;
+            netCopy = featureSnapshot.network;
+            processCopy = featureSnapshot.processCount;
+            topCpuCopy = featureSnapshot.topProcessCpu;
+            topMemCopy = featureSnapshot.topProcessMemory;        }
 
         g_pipeline.Enqueue(snapshot);
         AdaptiveBaselineResult baselineResult = g_adaptiveBaseline.EvaluateAndUpdate(snapshot, baselineMinSamples, baselineSensitivity);
-        WriteRuntimeFeaturesJson(runtimeFeaturesPath, cpuCopy, memCopy, diskCopy, netCopy, processCopy, topCpuCopy, topMemCopy, cpuTh, memTh, diskTh);
+        const auto featurePacketStart = steady_clock::now();
+        const bool featurePacketWritten = WriteRuntimeFeaturePacket(runtimeFeaturesPath, {
+            AI_WINDOW,
+            cpuTh,
+            memTh,
+            diskTh,
+            cpuCopy,
+            memCopy,
+            diskCopy,
+            netCopy,
+            processCopy,
+            topCpuCopy,
+            topMemCopy,
+        });
+        const double featurePacketLatencyMs = static_cast<double>(duration_cast<milliseconds>(steady_clock::now() - featurePacketStart).count());
+        if (!featurePacketWritten && (g_tick % 30) == 0) {
+            AppendRuntimeLog("legacy_feature_packet_write_failed", {{"latency_ms", to_string(featurePacketLatencyMs)}});
+        }
 
         ModelPrediction modelPrediction;
         string predictionPath = "none";
@@ -1128,6 +1146,7 @@ void MonitorThread(HWND hwnd) {
             }
 
             predictionLatencyMs = static_cast<double>(duration_cast<milliseconds>(steady_clock::now() - predictionStart).count());
+            inferenceLatencyWindow.Record(predictionLatencyMs);
         }
         double currentAiProb = 0.0;
         double currentAiConfidence = 0.0;
@@ -1390,6 +1409,7 @@ void MonitorThread(HWND hwnd) {
             g_alert = alertLocal;
         }
 
+        const auto storageBatchStart = steady_clock::now();
         const bool decisionAuditOk = g_storage.LogDecisionAudit(
             snapshot,
             decisionResult,
@@ -1590,7 +1610,22 @@ void MonitorThread(HWND hwnd) {
                 IsInferenceServiceRunning(),
                 g_storage.IsReady()
             );
-        }
+            const bool runtimePerformanceOk = g_storage.LogRuntimePerformance(runtimeHealthSample);
+            g_runtimeHealth.RecordStorageWrite("runtime_performance", runtimePerformanceOk);
+            const double storageBatchLatencyMs = static_cast<double>(
+                duration_cast<milliseconds>(steady_clock::now() - storageBatchStart).count()
+            );
+            g_runtimeHealth.RecordStorageBatchLatency(storageBatchLatencyMs);
+            if (!runtimePerformanceOk) {
+                AppendRuntimeLog("runtime_performance_write_failed", {});
+            }
+            runtimeHealthSample = g_runtimeHealth.Snapshot(
+                snapshot.timestamp,
+                currentSource,
+                currentPredictionPath,
+                IsInferenceServiceRunning(),
+                g_storage.IsReady()
+            );        }
 
         {
             lock_guard<mutex> lock(g_dataMutex);
@@ -1984,9 +2019,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
     case WM_DESTROY:
         RemoveTrayIcon();
-        g_running = false;
-        if (g_monitorThread.joinable()) {
-            g_monitorThread.join();
+        if (g_runtimeOrchestrator) {
+            g_runtimeOrchestrator->Stop();
+        } else {
+            g_running = false;
+            if (g_monitorThread.joinable()) g_monitorThread.join();
         }
         StopInferenceService();
         g_pipeline.Stop();
@@ -2011,6 +2048,8 @@ int main() {
         fs::path("config.txt"),
     });
     g_config.LoadFromFile(configPath);
+    const RuntimeMode configuredRuntimeMode = ParseRuntimeMode(g_config.GetString("RUNTIME_MODE", "MONITOR_ONLY"));
+    g_runtimeStateStore.SetMode(configuredRuntimeMode);
     g_agentStartMinimized = CommandLineHasFlag(L"--agent");
     g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
     g_storage.Open((exeDir / L"monitor.db").string());
@@ -2084,7 +2123,62 @@ int main() {
         {"start_on_boot", IsStartupAgentRegistered() ? "1" : "0"},
     });
 
-    g_monitorThread = thread(MonitorThread, hwnd);
+    std::vector<std::unique_ptr<IRuntimeComponent>> runtimeComponents;
+    runtimeComponents.push_back(std::make_unique<ThreadedRuntimeComponent>(
+        RuntimeComponent::Collectors,
+        [hwnd] {
+            g_running = true;
+            g_monitorThread = thread(MonitorThread, hwnd);
+            return RuntimeStatus{};
+        },
+        [] {
+            g_running = false;
+            if (g_monitorThread.joinable()) g_monitorThread.join();
+        }
+    ));
+    g_runtimeOrchestrator = std::make_unique<RuntimeOrchestrator>(g_runtimeStateStore, std::move(runtimeComponents));
+    const RuntimeStatus runtimeStart = g_runtimeOrchestrator->Start();
+    if (!runtimeStart.Succeeded()) {
+        MessageBoxA(hwnd, runtimeStart.detail.c_str(), "Runtime startup failed", MB_OK | MB_ICONERROR);
+        DestroyWindow(hwnd);
+    }
+
+    const long long startupHealthTimestamp = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    g_runtimeStateStore.SetComponentHealth({
+        RuntimeComponent::Storage,
+        g_storage.IsReady() ? ComponentHealthState::Healthy : ComponentHealthState::Unavailable,
+        g_storage.IsReady() ? RuntimeStatusCode::Ok : RuntimeStatusCode::StorageUnavailable,
+        g_storage.IsReady() ? "SQLite ready" : "SQLite unavailable; monitoring continues without persistence",
+        startupHealthTimestamp
+    });
+    g_runtimeStateStore.SetComponentHealth({
+        RuntimeComponent::Inference,
+        ComponentHealthState::Degraded,
+        RuntimeStatusCode::InferenceUnavailable,
+        "Legacy Python inference is research-only and unavailable until a model window exists",
+        startupHealthTimestamp
+    });
+    g_runtimeStateStore.SetComponentHealth({
+        RuntimeComponent::Policy,
+        ComponentHealthState::Healthy,
+        RuntimeStatusCode::Ok,
+        "Policy initialized with automatic actions disabled",
+        startupHealthTimestamp
+    });
+    g_runtimeStateStore.SetComponentHealth({
+        RuntimeComponent::Certificate,
+        ComponentHealthState::Unavailable,
+        RuntimeStatusCode::InvalidConfiguration,
+        "No Phase 4 reliability certificate is installed",
+        startupHealthTimestamp
+    });
+    g_runtimeStateStore.SetComponentHealth({
+        RuntimeComponent::Ui,
+        ComponentHealthState::Healthy,
+        RuntimeStatusCode::Ok,
+        "Win32 dashboard window is active",
+        startupHealthTimestamp
+    });
 
     MSG msg{};
     while (GetMessageW(&msg, NULL, 0, 0)) {

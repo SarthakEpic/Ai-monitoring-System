@@ -425,17 +425,17 @@ DecisionResult DecisionEngine::Evaluate(
         } else if (result.level != RiskLevel::Critical) {
             result.safetyGate = "WARNING_OBSERVE";
             result.blockedReason = "warning level cannot execute healing";
-        } else if (aiSource != "MODEL" || aiConfidence < 85.0) {
-            result.safetyGate = "MODEL_CONFIDENCE_BLOCKED";
-            result.blockedReason = "model confidence below healing gate";
+        } else if (aiSource != "MODEL") {
+            result.safetyGate = "MODEL_SOURCE_REQUIRED";
+            result.blockedReason = "a model source is required for an action proposal";
         } else if (result.candidate.safetyScore < 80.0) {
             result.safetyGate = "PROCESS_SAFETY_BLOCKED";
             result.blockedReason = "candidate process safety score below healing gate";
         } else {
-            result.safetyGate = "READY";
-            result.blockedReason = "all safety gates passed";
-            result.safeToHeal = true;
-            result.dryRun = false;
+            // Legacy confidence is heuristic and may inform display only. It
+            // cannot authorize an action until Phase 2 calibration exists.
+            result.safetyGate = "MODEL_CALIBRATION_REQUIRED";
+            result.blockedReason = "legacy model confidence is not calibrated for action authorization";
         }
     }
 

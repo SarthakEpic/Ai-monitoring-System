@@ -302,8 +302,8 @@ def build_prediction_payload_from_model(input_path: str, model: object, metadata
 
     safe_to_heal = False
     recommended_action = "monitor_only"
-    if predicted_class == "CRITICAL" and confidence >= 78.0:
-        recommended_action = "prepare_heal_review"
+    if predicted_class == "CRITICAL":
+        recommended_action = "prepare_manual_review"
     elif predicted_class == "WARNING":
         recommended_action = "increase_observation"
 

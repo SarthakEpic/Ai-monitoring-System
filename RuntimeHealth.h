@@ -15,6 +15,16 @@ struct RuntimeHealthSample {
     double storageSuccessRate = 100.0;
     double avgPredictionLatencyMs = 0.0;
     double lastPredictionLatencyMs = 0.0;
+    // Monitor self-observation values are separate from user workload metrics.
+    double collectorP95Ms = 0.0;
+    double inferenceP95Ms = 0.0;
+    double processCpuPercent = 0.0;
+    double processIoBytesPerSecond = 0.0;
+    double wakeupsPerSecond = 0.0;
+    double workingSetMb = 0.0;
+    double storageBatchLatencyMs = 0.0;
+    int pendingWrites = 0;
+    std::string observerState = "within_budget";
     int totalCycles = 0;
     int modelAttempts = 0;
     int modelSuccesses = 0;
@@ -46,6 +56,17 @@ public:
 
     void RecordStorageWrite(const std::string& name, bool ok);
     void RecordAlert();
+    void RecordObserverMetrics(
+        double collectorP95Ms,
+        double inferenceP95Ms,
+        double processCpuPercent,
+        double processIoBytesPerSecond,
+        double wakeupsPerSecond,
+        double workingSetMb,
+        int pendingWrites,
+        const std::string& observerState
+    );
+    void RecordStorageBatchLatency(double latencyMs);
 
     RuntimeHealthSample Snapshot(
         long long timestamp,
@@ -70,5 +91,14 @@ private:
     int alerts_ = 0;
     double avgPredictionLatencyMs_ = 0.0;
     double lastPredictionLatencyMs_ = 0.0;
+    double collectorP95Ms_ = 0.0;
+    double inferenceP95Ms_ = 0.0;
+    double processCpuPercent_ = 0.0;
+    double processIoBytesPerSecond_ = 0.0;
+    double wakeupsPerSecond_ = 0.0;
+    double workingSetMb_ = 0.0;
+    double storageBatchLatencyMs_ = 0.0;
+    int pendingWrites_ = 0;
+    std::string observerState_ = "within_budget";
     std::string lastFailure_ = "none";
 };

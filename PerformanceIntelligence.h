@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <pdh.h>
 
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -77,7 +78,18 @@ struct PerformanceCriticalityGraph {
 
 class WorkloadPhaseDetector {
 public:
+    using UptimeProvider = std::function<unsigned long long()>;
+    using PowerStatusProvider = std::function<bool(SYSTEM_POWER_STATUS&)>;
+
+    explicit WorkloadPhaseDetector(
+        UptimeProvider uptimeProvider = [] { return GetTickCount64(); },
+        PowerStatusProvider powerStatusProvider = [](SYSTEM_POWER_STATUS& status) { return GetSystemPowerStatus(&status) == TRUE; }
+    );
     WorkloadPhase Detect(const SystemSnapshot& snapshot, const QoeTelemetrySample* telemetry = nullptr) const;
+
+private:
+    UptimeProvider uptimeProvider_;
+    PowerStatusProvider powerStatusProvider_;
 };
 
 class QoeTelemetryCollector {

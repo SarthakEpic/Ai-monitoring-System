@@ -221,3 +221,33 @@ Scope:
 Evidence: On 2026-07-13, `tools/run_all_checks.ps1 -Configuration Debug -BuildParallelism 1` passed: CMake configure/build, 8 native tests, 6 Python tests, `git diff --check`, and a portable-package dry run. A local metadata baseline was captured on Windows 11 build 26200, AMD Ryzen 3 3250U, 3534 MB RAM. The audit confirmed that QoE capture still runs every monitor-loop tick, confidence is heuristic, runtime inference uses Python/joblib and polled JSON, and the product is NOT_CERTIFIED.
 
 Next action: Phase 1B runtime decomposition and immediate correctness, beginning with testable orchestration, named severity semantics, runtime modes, component health, and startup/shutdown regression coverage.
+### Phase 1B - Runtime Decomposition and Immediate Correctness
+
+Status: COMPLETE (LOCAL IMPLEMENTATION; EXTERNAL VALIDATION PENDING)
+
+Completed so far:
+
+- Lifecycle ownership now starts/stops the collector thread through a testable `RuntimeOrchestrator` component rather than direct ad hoc thread control at the application edge.
+- The legacy runtime inference packet/parser path is isolated in `InferenceProtocol.*`; the bounded 100 ms packet write protects the monitor from a stalled legacy consumer.
+- `RollingFeatureCache`, observer-effect control, and their unit tests reduce repeated allocation/work in the monitor loop.
+
+Evidence: lifecycle orchestration, fake-clock scheduling, component failure coverage, named severity, and the legacy-confidence authorization block are verified. The Win32 entry point remains a large coordination boundary; its further decomposition is tracked as Phase 3 runtime hardening, while Python/joblib and polled JSON remain explicitly research-only until Phase 3 native inference.
+### Phase 1C - Data Contract and Storage Foundation
+
+Status: COMPLETE (LOCAL IMPLEMENTATION; EXTERNAL VALIDATION PENDING)
+
+Completed so far:
+
+- Versioned v3 telemetry, episode, outcome, label-provenance, and action-outcome contracts with certification gates and validation tests.
+- Episode builder and grouped temporal split tooling that prevents an episode from leaking across train, validation, calibration, or locked-test partitions.
+- Additive SQLite migrations 16-18 for devices, support descriptors, sessions, episodes, compact telemetry summaries, robust normalized baselines, QoE outcomes, provenance, action outcomes, and collector health. The v3 store is runtime-connected, uses SHA-256 local pseudonyms, applies retention/deletion/export controls, and is regression-tested against an existing metrics table.
+- Episode-level evaluation foundation: provenance/contradiction label gates, locked-split protection, transparent research baselines, calibration/risk-coverage metrics, Wilson confidence bounds, and device/workload/application slice reports. These are required CI/local checks and do not certify the legacy trainer.
+- The legacy runtime model protocol is now isolated behind a testable component. Its JSON packet write is bounded and cancels after 100 ms so a blocked consumer cannot stall monitoring; it remains research-only until Phase 3 replaces Python/joblib and polled JSON with the required native signed inference path.
+
+Evidence: `docs/PHASE1_ACCEPTANCE.md` records passing local implementation gates. Observer CPU, I/O, wakeups, working set, collector p95, inference p95, pending writes, and storage-batch latency persist through migration 19. Real multi-device workload evidence remains an external validation requirement. The product remains NOT_CERTIFIED and action execution remains disabled.
+
+### Phase 2 - Reliability Intelligence
+
+Status: IN PROGRESS (2026-07-13)
+
+Starting point: the existing contextual impact model and shadow policy are retained. The first Phase 2 implementation focus is a fail-closed reliability gate that combines certificate validity, supported envelope, data quality, OOD signals, and drift before a model/policy result can be accepted.

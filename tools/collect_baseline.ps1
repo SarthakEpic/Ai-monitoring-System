@@ -41,15 +41,27 @@ function Get-ProcessSample {
         cpu_percent = $cpuPercent
         working_set_mb_min = [Math]::Round((($workingSets | Measure-Object -Minimum).Minimum / 1MB), 2)
         working_set_mb_max = [Math]::Round((($workingSets | Measure-Object -Maximum).Maximum / 1MB), 2)
-        wakeup_frequency_hz = "not_available_from_win32_process_api"
-        loop_duration_ms = "not_available_until_runtime_scheduler_instrumentation"
-        collector_durations_ms = "not_available_until_collector_cost_registry"
-        inference_latency_ms = "read_runtime_health_database_when_available"
-        ipc_or_file_latency_ms = "not_available_until_typed_ipc"
-        database_write_latency_ms = "not_available_until_storage_timing_instrumentation"
+        runtime_performance = $runtimePerformance
+        measurement_note = "Observer values come from the monitor's bounded runtime record. A not_available status means the app has not persisted a sample yet."
     }
 }
 
+function Get-RuntimePerformance {
+    param([string]$DatabasePath, [string]$SummaryScript)
+
+    if (-not (Test-Path -LiteralPath $SummaryScript)) {
+        return [ordered]@{ status = "not_available"; reason = "runtime performance summary helper is missing" }
+    }
+    try {
+        $raw = & python $SummaryScript --db $DatabasePath 2>$null
+        if ($LASTEXITCODE -eq 0 -and $raw) {
+            return ($raw | ConvertFrom-Json -ErrorAction Stop)
+        }
+    }
+    catch {
+    }
+    return [ordered]@{ status = "not_available"; reason = "runtime performance summary helper could not run"; database = $DatabasePath }
+}
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $binary = Join-Path $repositoryRoot "build\$Configuration\PredictiveAutoHeal.exe"
 if (-not (Test-Path $binary)) {
@@ -71,6 +83,9 @@ Get-Content -LiteralPath (Join-Path $repositoryRoot "config.txt") | ForEach-Obje
         $featureFlags[$matches[1]] = $matches[2].Trim()
     }
 }
+
+$runtimeDatabasePath = Join-Path (Split-Path -Parent $binary) "monitor.db"
+$runtimePerformance = Get-RuntimePerformance -DatabasePath $runtimeDatabasePath -SummaryScript (Join-Path $repositoryRoot "runtime_performance_summary.py")
 
 $modelMetadataPath = Join-Path $repositoryRoot "build\ai_model_meta.json"
 $modelId = "not_present"
@@ -119,6 +134,7 @@ $result = [ordered]@{
         total_memory_mb = [Math]::Round($computerSystem.TotalPhysicalMemory / 1MB, 0)
     }
     measurements = $measurement
+    runtime_performance = $runtimePerformance
     evidence_status = "local_development_baseline_not_certification"
 }
 

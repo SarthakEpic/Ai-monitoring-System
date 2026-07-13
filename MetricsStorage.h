@@ -53,6 +53,7 @@ public:
         const SafetyPolicyResult& policyResult
     );
     bool LogRuntimeHealth(const RuntimeHealthSample& sample);
+    bool LogRuntimePerformance(const RuntimeHealthSample& sample);
     bool LogAdaptiveBaseline(const AdaptiveBaselineResult& baseline);
     bool LogLowEndAutopilot(const LowEndAutopilotResult& autopilot);
     bool LogBackgroundAgent(const BackgroundAgentResult& agent);

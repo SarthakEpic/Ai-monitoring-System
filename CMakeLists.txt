@@ -9,10 +9,15 @@ set_source_files_properties(sqlite3.c PROPERTIES LANGUAGE C COMPILE_OPTIONS "/W0
 
 add_executable(PredictiveAutoHeal
     AdaptiveSampling.cpp
+    MonitoringScheduler.cpp
     ModernDashboardUI.cpp
+    MonitoringScheduler.cpp
+    ObserverEffectGovernor.cpp
     RuntimeFoundation.cpp
     RuntimeOrchestrator.cpp
     RuntimeStateStore.cpp
+    ThreadedRuntimeComponent.cpp
+    RollingFeatureCache.cpp
     main.cpp
     ActionVerification.cpp
     AdaptiveBaseline.cpp
@@ -21,15 +26,19 @@ add_executable(PredictiveAutoHeal
     BackgroundAgent.cpp
     BenchmarkProof.cpp
     BrowserIntegrationBridge.cpp
+    DatabaseMigrations.cpp
+    EpisodeTelemetryStore.cpp
     CooperativeIntegrations.cpp
     DecisionEngine.cpp
     HealingVerifier.cpp
     ImpactLearning.cpp
+    InferenceProtocol.cpp
     LowEndAutopilot.cpp
     MetricsPipeline.cpp
     MetricsStorage.cpp
     PerformanceIntelligence.cpp
     RuntimeHealth.cpp
+    ReliabilityGate.cpp
     SafeOnlinePolicy.cpp
     SafetyPolicy.cpp
     ProcessClassifier.cpp
@@ -64,6 +73,7 @@ add_custom_command(TARGET PredictiveAutoHeal POST_BUILD
         "${CMAKE_SOURCE_DIR}/heal_verification_summary.py"
         "${CMAKE_SOURCE_DIR}/safety_policy_summary.py"
         "${CMAKE_SOURCE_DIR}/runtime_health_summary.py"
+        "${CMAKE_SOURCE_DIR}/runtime_performance_summary.py"
         "${CMAKE_SOURCE_DIR}/adaptive_baseline_summary.py"
         "${CMAKE_SOURCE_DIR}/autopilot_summary.py"
         "${CMAKE_SOURCE_DIR}/install_startup.ps1"
@@ -123,9 +133,20 @@ if(BUILD_TESTING)
         RuntimeFoundation.cpp
         RuntimeOrchestrator.cpp
         RuntimeStateStore.cpp
+    ThreadedRuntimeComponent.cpp
     )
     target_compile_definitions(RuntimeFoundationTests PRIVATE UNICODE _UNICODE NOMINMAX)
     add_test(NAME RuntimeFoundationTests COMMAND RuntimeFoundationTests)
+
+    add_executable(ThreadedRuntimeComponentTests
+        ThreadedRuntimeComponentTests.cpp
+        ThreadedRuntimeComponent.cpp
+        RuntimeFoundation.cpp
+        RuntimeOrchestrator.cpp
+        RuntimeStateStore.cpp
+    )
+    target_compile_definitions(ThreadedRuntimeComponentTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME ThreadedRuntimeComponentTests COMMAND ThreadedRuntimeComponentTests)
 
     add_executable(AdaptiveSamplingTests
         AdaptiveSamplingTests.cpp
@@ -133,7 +154,62 @@ if(BUILD_TESTING)
     )
     target_compile_definitions(AdaptiveSamplingTests PRIVATE UNICODE _UNICODE NOMINMAX)
     add_test(NAME AdaptiveSamplingTests COMMAND AdaptiveSamplingTests)
+    add_executable(MonitoringSchedulerTests
+        MonitoringSchedulerTests.cpp
+        MonitoringScheduler.cpp
+    )
+    target_compile_definitions(MonitoringSchedulerTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME MonitoringSchedulerTests COMMAND MonitoringSchedulerTests)
+    add_executable(DecisionEngineTests
+        DecisionEngineTests.cpp
+        DecisionEngine.cpp
+    )
+    target_compile_definitions(DecisionEngineTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME DecisionEngineTests COMMAND DecisionEngineTests)
+    add_executable(ReliabilityGateTests
+        ReliabilityGateTests.cpp
+        ReliabilityGate.cpp
+        RuntimeFoundation.cpp
+    )
+    target_compile_definitions(ReliabilityGateTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME ReliabilityGateTests COMMAND ReliabilityGateTests)
 
+    add_executable(InferenceProtocolTests
+        InferenceProtocolTests.cpp
+        InferenceProtocol.cpp
+    )
+    target_compile_definitions(InferenceProtocolTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME InferenceProtocolTests COMMAND InferenceProtocolTests)
+    set_tests_properties(InferenceProtocolTests PROPERTIES TIMEOUT 10)
+    add_executable(RollingFeatureCacheTests
+        RollingFeatureCacheTests.cpp
+        RollingFeatureCache.cpp
+    )
+    target_compile_definitions(RollingFeatureCacheTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME RollingFeatureCacheTests COMMAND RollingFeatureCacheTests)
+    add_executable(ObserverEffectGovernorTests
+        ObserverEffectGovernorTests.cpp
+        ObserverEffectGovernor.cpp
+    )
+    target_compile_definitions(ObserverEffectGovernorTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME ObserverEffectGovernorTests COMMAND ObserverEffectGovernorTests)
+    add_executable(DatabaseMigrationsTests
+        DatabaseMigrationsTests.cpp
+        DatabaseMigrations.cpp
+        sqlite3.c
+    )
+    target_compile_definitions(DatabaseMigrationsTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME DatabaseMigrationsTests COMMAND DatabaseMigrationsTests)
+    add_executable(EpisodeTelemetryStoreTests
+        EpisodeTelemetryStoreTests.cpp
+        EpisodeTelemetryStore.cpp
+        DatabaseMigrations.cpp
+        PerformanceIntelligence.cpp
+        sqlite3.c
+    )
+    target_compile_definitions(EpisodeTelemetryStoreTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    target_link_libraries(EpisodeTelemetryStoreTests PRIVATE Bcrypt Psapi Pdh Dwmapi User32)
+    add_test(NAME EpisodeTelemetryStoreTests COMMAND EpisodeTelemetryStoreTests)
     add_executable(ResourceOrchestratorTests
         ResourceOrchestratorTests.cpp
         ActionVerification.cpp
@@ -225,7 +301,7 @@ if(MSVC)
     )
     foreach(WARNING_TARGET IN LISTS PROJECT_WARNING_TARGETS)
         if(TARGET ${WARNING_TARGET})
-            target_compile_options(${WARNING_TARGET} PRIVATE /W4 /permissive- /Zc:__cplusplus)
+            target_compile_options(${WARNING_TARGET} PRIVATE /W4 /permissive- /Zc:__cplusplus /FS)
         endif()
     endforeach()
 endif()

@@ -1,4 +1,5 @@
 #include "MetricsStorage.h"
+#include "DatabaseMigrations.h"
 
 #include <ctime>
 #include <sstream>
@@ -497,16 +498,23 @@ bool MetricsStorage::EnsureSchema() {
         return false;
     }
 
-    return EnsureColumn("net_down_kbps", "REAL DEFAULT 0") &&
-           EnsureColumn("net_up_kbps", "REAL DEFAULT 0") &&
-           EnsureColumn("process_count", "INTEGER DEFAULT 0") &&
-           EnsureColumn("scenario_label", "TEXT DEFAULT 'auto'") &&
-           EnsureColumn("top_process", "TEXT DEFAULT ''") &&
-           EnsureColumn("top_process_cpu", "REAL DEFAULT 0") &&
-           EnsureColumn("top_process_mem", "REAL DEFAULT 0") &&
-           EnsureTableColumn("process_samples", "intent_role", "TEXT DEFAULT 'none'") &&
-           EnsureTableColumn("process_samples", "is_recently_active", "INTEGER DEFAULT 0") &&
-           EnsureTableColumn("process_samples", "matches_user_intent", "INTEGER DEFAULT 0");
+    const bool legacySchemaReady =
+        EnsureColumn("net_down_kbps", "REAL DEFAULT 0") &&
+        EnsureColumn("net_up_kbps", "REAL DEFAULT 0") &&
+        EnsureColumn("process_count", "INTEGER DEFAULT 0") &&
+        EnsureColumn("scenario_label", "TEXT DEFAULT 'auto'") &&
+        EnsureColumn("top_process", "TEXT DEFAULT ''") &&
+        EnsureColumn("top_process_cpu", "REAL DEFAULT 0") &&
+        EnsureColumn("top_process_mem", "REAL DEFAULT 0") &&
+        EnsureTableColumn("process_samples", "intent_role", "TEXT DEFAULT 'none'") &&
+        EnsureTableColumn("process_samples", "is_recently_active", "INTEGER DEFAULT 0") &&
+        EnsureTableColumn("process_samples", "matches_user_intent", "INTEGER DEFAULT 0");
+    if (!legacySchemaReady) {
+        return false;
+    }
+
+    std::string migrationError;
+    return ApplyAegisMigrations(db_, migrationError);
 }
 
 bool MetricsStorage::EnsureColumn(const string& columnName, const string& columnDefinition) {
@@ -885,6 +893,53 @@ bool MetricsStorage::LogRuntimeHealth(const RuntimeHealthSample& sample) {
         }
     }
 
+    return ok;
+}
+
+bool MetricsStorage::LogRuntimePerformance(const RuntimeHealthSample& sample) {
+    lock_guard<mutex> lock(dbMutex_);
+    if (!db_) return false;
+
+    constexpr const char* kInsertSql =
+        "INSERT OR REPLACE INTO runtime_performance_samples("
+        "observed_at, collector_p95_ms, inference_p95_ms, process_cpu_percent, "
+        "process_io_bytes_per_second, wakeups_per_second, working_set_mb, "
+        "storage_batch_latency_ms, pending_writes, observer_state, schema_version"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1);";
+
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db_, kInsertSql, -1, &statement, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(statement, 1, static_cast<sqlite3_int64>(sample.timestamp));
+    sqlite3_bind_double(statement, 2, sample.collectorP95Ms);
+    sqlite3_bind_double(statement, 3, sample.inferenceP95Ms);
+    sqlite3_bind_double(statement, 4, sample.processCpuPercent);
+    sqlite3_bind_double(statement, 5, sample.processIoBytesPerSecond);
+    sqlite3_bind_double(statement, 6, sample.wakeupsPerSecond);
+    sqlite3_bind_double(statement, 7, sample.workingSetMb);
+    sqlite3_bind_double(statement, 8, sample.storageBatchLatencyMs);
+    sqlite3_bind_int(statement, 9, sample.pendingWrites);
+    sqlite3_bind_text(statement, 10, sample.observerState.c_str(), -1, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(statement) == SQLITE_DONE;
+    sqlite3_finalize(statement);
+    if (ok) {
+        constexpr const char* kRetentionSql =
+            "DELETE FROM runtime_performance_samples WHERE observed_at < ?1;";
+        sqlite3_stmt* retentionStatement = nullptr;
+        if (sqlite3_prepare_v2(db_, kRetentionSql, -1, &retentionStatement, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(
+                retentionStatement,
+                1,
+                static_cast<sqlite3_int64>(sample.timestamp - PROCESS_SAMPLE_RETENTION_SECONDS)
+            );
+            ok = sqlite3_step(retentionStatement) == SQLITE_DONE;
+            sqlite3_finalize(retentionStatement);
+        } else {
+            ok = false;
+        }
+    }
     return ok;
 }
 bool MetricsStorage::LogAdaptiveBaseline(const AdaptiveBaselineResult& baseline) {

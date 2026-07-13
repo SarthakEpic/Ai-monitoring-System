@@ -6,6 +6,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 
+from labeling import label_to_risk
 from model_features import FEATURE_NAMES, WINDOW, build_prediction_payload, predict_probability_from_runtime_file
 
 TEST_ROOT = Path(__file__).resolve().parent / ".test_tmp"
@@ -58,6 +59,8 @@ class ModelContractTests(unittest.TestCase):
         probability = predict_probability_from_runtime_file(str(runtime_path), str(model_path))
         self.assertAlmostEqual(probability, result["risk"])
 
+    def test_recovery_is_not_a_higher_risk_severity(self):
+        self.assertEqual(label_to_risk("RECOVERY"), label_to_risk("NORMAL"))
     def test_runtime_window_requires_enough_samples(self):
         runtime_path = TEST_ROOT / "runtime_features.json"
         model_path = TEST_ROOT / "ai_model.joblib"

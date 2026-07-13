@@ -74,6 +74,37 @@ void TestOrchestratorFailureRollsBackStartedComponents() {
     assert(!store.Snapshot().runtimeStarted);
 }
 
+void TestEachFailureReportsComponentHealthAndRollsBack() {
+    const std::vector<std::pair<RuntimeComponent, RuntimeStatusCode>> failures = {
+        {RuntimeComponent::Collectors, RuntimeStatusCode::CollectorUnavailable},
+        {RuntimeComponent::Inference, RuntimeStatusCode::InferenceUnavailable},
+        {RuntimeComponent::Storage, RuntimeStatusCode::StorageUnavailable},
+        {RuntimeComponent::Policy, RuntimeStatusCode::PolicyUnavailable},
+        {RuntimeComponent::Ui, RuntimeStatusCode::UiUnavailable},
+    };
+
+    for (const auto& [failedComponent, code] : failures) {
+        RuntimeStateStore store;
+        std::vector<std::string> events;
+        std::vector<std::unique_ptr<IRuntimeComponent>> components;
+        if (failedComponent != RuntimeComponent::Collectors) {
+            components.push_back(std::make_unique<FakeComponent>(RuntimeComponent::Collectors, true, events));
+        }
+        components.push_back(std::make_unique<FakeComponent>(failedComponent, false, events));
+        RuntimeOrchestrator orchestrator(store, std::move(components));
+        const RuntimeStatus status = orchestrator.Start();
+        assert(status.code == RuntimeStatusCode::StartupFailed);
+        assert(!store.Snapshot().runtimeStarted);
+
+        bool failureRecorded = false;
+        for (const ComponentHealth& health : store.Snapshot().componentHealth) {
+            if (health.component == failedComponent) {
+                failureRecorded = health.state == ComponentHealthState::Unavailable;
+            }
+        }
+        assert(failureRecorded);
+    }
+}
 void TestOrchestratorStopsInReverseOrder() {
     RuntimeStateStore store;
     std::vector<std::string> events;
@@ -94,6 +125,7 @@ int main() {
     TestModesAndSeverity();
     TestStateStore();
     TestOrchestratorFailureRollsBackStartedComponents();
+    TestEachFailureReportsComponentHealthAndRollsBack();
     TestOrchestratorStopsInReverseOrder();
     return 0;
 }

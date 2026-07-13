@@ -78,3 +78,25 @@ There is no signed model package, production installer, independent locked certi
 ## Phase 1A Exit Status
 
 Complete. The audit, CI repair, reproducible local checks, metadata/baseline tooling, and licensing notice are present. The remaining Phase 1 work begins with runtime decomposition and immediate correctness.
+## Phase 1C Progress Correction (2026-07-13)
+
+The Phase 1 v3 data contract is now documented and validated. SQLite migration 16 is additive, transactional, idempotent, and regression-tested against an existing legacy metrics table. It adds device/session, workload-episode, telemetry-summary, QoE-outcome, label-provenance, action-outcome, and collector-health storage without deleting historical monitoring rows. Runtime population of every new v3 table remains in progress; this correction does not change the audit's research-only model or certification conclusions.
+
+## Runtime Decomposition Progress (2026-07-13)
+
+The legacy model protocol parsing and feature-packet construction have been moved from `main.cpp` into `InferenceProtocol.*` with a dedicated native unit test. The legacy packet writer uses a Windows overlapped write and cancels after 100 ms rather than blocking the monitor loop behind a consumer-held file. This improves containment only: Python/joblib and polled JSON remain research-only runtime dependencies and must be replaced by the Phase 3 native signed inference path.
+
+Current local verification after this change: `tools/run_all_checks.ps1 -Configuration Debug -BuildParallelism 1` passed CMake configure/build, 15 native tests, 24 Python tests, whitespace validation, and the portable-package dry run. This is local implementation evidence, not production certification.
+## Phase 1 Evidence Update (2026-07-13)
+
+The earlier table is a point-in-time audit, not a claim that later work was
+absent. The current local validation path runs 16 native CTest targets and 26
+Python tests, plus whitespace validation and a portable-package dry run.
+Migration 19 persists real observer-effect values: collector and inference p95,
+monitor CPU and I/O rate, wakeups, working set, queue depth, observer state,
+and storage-batch latency. `tools/collect_baseline.ps1` includes the latest
+record or explicitly returns `not_available` before the monitor has written one.
+
+This improves local evidence collection only. It does not alter the research-only
+runtime inference status, autonomous-action prohibition, support-envelope gap,
+or external certification requirements.
