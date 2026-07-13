@@ -1,6 +1,6 @@
 # Project Goal and Progress
 
-Last updated: 2026-07-11
+Last updated: 2026-07-13
 
 ## Source of Truth
 
@@ -202,4 +202,22 @@ UI modernization: COMPLETE (2026-07-12). The legacy single-canvas renderer was r
 
 Current status: Milestones 1-7 are complete as a locally implemented and tested research prototype. Real action execution remains disabled by default.
 
-Next action: run the documented randomized benchmark campaign on the hardware matrix, retain all negative and safety results, and obtain independent reproduction before making any public performance or production-readiness claim.
+## Aegis-99 Four-Phase Execution
+
+The Aegis-99 four-phase plan is now the governing implementation roadmap. Automatic action execution remains disabled until an independent Phase 4 certificate permits a specific support slice.
+
+### Phase 1A - Current-State Audit and Reproducible Baseline
+
+Status: COMPLETE (2026-07-13)
+
+Scope:
+
+- Honest runtime, model, safety, integration, packaging, CI, and claim inventory in `docs/CURRENT_STATE_AUDIT.md` and `docs/current_state_audit.json`.
+- One reproducible local check command: `tools/run_all_checks.ps1`.
+- Build, hardware, Windows, feature-flag, schema, and model metadata capture through `tools/collect_baseline.ps1`.
+- CI expanded to run both Python suites, CTest, whitespace validation, and a portable-package dry run.
+- Explicit unresolved-license notice in `docs/LICENSE_REQUIRED.md`.
+
+Evidence: On 2026-07-13, `tools/run_all_checks.ps1 -Configuration Debug -BuildParallelism 1` passed: CMake configure/build, 8 native tests, 6 Python tests, `git diff --check`, and a portable-package dry run. A local metadata baseline was captured on Windows 11 build 26200, AMD Ryzen 3 3250U, 3534 MB RAM. The audit confirmed that QoE capture still runs every monitor-loop tick, confidence is heuristic, runtime inference uses Python/joblib and polled JSON, and the product is NOT_CERTIFIED.
+
+Next action: Phase 1B runtime decomposition and immediate correctness, beginning with testable orchestration, named severity semantics, runtime modes, component health, and startup/shutdown regression coverage.

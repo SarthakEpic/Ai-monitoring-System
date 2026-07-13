@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-07-13",
+  "audited_commit": "f86d2c9d3595dde9443778a0d6e252beb2d02c63",
+  "product_status": "RESEARCH_PROTOTYPE_NOT_CERTIFIED",
+  "automatic_actions_enabled_by_default": false,
+  "baseline": {
+    "cmake_debug_build": "passed",
+    "ctest": { "passed": 8, "total": 8 },
+    "python_tests": { "passed": 6, "total": 6 },
+    "benchmark_evidence": "local_development_only"
+  },
+  "capabilities": [
+    { "name": "system_metrics", "status": ["runtime_connected", "test_verified"], "phase_gap": "support_envelope" },
+    { "name": "qoe_telemetry", "status": ["runtime_connected", "test_verified"], "phase_gap": "adaptive_capture_schedule" },
+    { "name": "sqlite_storage", "status": ["runtime_connected", "test_verified"], "phase_gap": "versioned_migrations" },
+    { "name": "model_inference", "status": ["runtime_connected", "test_verified", "research_only"], "phase_gap": "native_signed_ipc" },
+    { "name": "reversible_actions", "status": ["test_verified", "disabled_by_default"], "phase_gap": "trusted_service_boundary" },
+    { "name": "cooperative_integrations", "status": ["implemented", "opt_in", "test_verified"], "phase_gap": "proof_canary_certificate_connection" },
+    { "name": "dashboard", "status": ["runtime_connected", "visually_exercised"], "phase_gap": "guarded_command_handlers" },
+    { "name": "packaging", "status": ["implemented"], "phase_gap": "signing_installer_update_validation" }
+  ],
+  "confirmed_risks": [
+    "qoe_capture_runs_each_main_loop",
+    "heuristic_confidence_is_not_calibrated",
+    "runtime_uses_python_joblib_and_polled_json",
+    "main_cpp_runtime_coupling_is_high",
+    "ci_omits_benchmark_tests_packaging_and_static_checks",
+    "no_locked_independent_certification_evidence"
+  ],
+  "unresolved_risks": [
+    "episode_split_leakage",
+    "manual_approval_workflow",
+    "impact_state_restoration_completeness",
+    "policy_promotion_workflow_completeness"
+  ]
+}
