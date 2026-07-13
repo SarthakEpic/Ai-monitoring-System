@@ -44,6 +44,7 @@ add_executable(PredictiveAutoHeal
     ReliabilityCascade.cpp
     SafeOnlinePolicy.cpp
     SafetyPolicy.cpp
+    SecureActuation.cpp
     ProcessClassifier.cpp
     ProcessGenome.cpp
     ProcessTelemetry.cpp
@@ -195,6 +196,21 @@ if(BUILD_TESTING)
     )
     target_compile_definitions(ReliabilityCascadeTests PRIVATE UNICODE _UNICODE NOMINMAX)
     add_test(NAME ReliabilityCascadeTests COMMAND ReliabilityCascadeTests)
+    add_executable(SecureActuationTests
+        SecureActuationTests.cpp
+        SecureActuation.cpp
+        ReliabilityGate.cpp
+        RuntimeFoundation.cpp
+    )
+    target_compile_definitions(SecureActuationTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME SecureActuationTests COMMAND SecureActuationTests)
+    add_executable(NativeModelBundleTests
+        NativeModelBundleTests.cpp
+        NativeModelBundle.cpp
+    )
+    target_compile_definitions(NativeModelBundleTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    target_link_libraries(NativeModelBundleTests PRIVATE Bcrypt Wintrust Crypt32)
+    add_test(NAME NativeModelBundleTests COMMAND NativeModelBundleTests)
     add_executable(InferenceProtocolTests
         InferenceProtocolTests.cpp
         InferenceProtocol.cpp
@@ -277,6 +293,7 @@ if(BUILD_TESTING)
         ResourceOrchestrator.cpp
         PerformanceIntelligence.cpp
         SafetyPolicy.cpp
+    SecureActuation.cpp
         AutoHealPlanner.cpp
         HealingVerifier.cpp
         sqlite3.c

@@ -251,3 +251,21 @@ Evidence: `docs/PHASE1_ACCEPTANCE.md` records passing local implementation gates
 Status: COMPLETE (LOCAL IMPLEMENTATION; EXTERNAL VALIDATION PENDING) (2026-07-13)
 
 Completed local implementation: a staged sentinel/specialist/temporal cascade with an independent failure critic; calibrated probability selection on calibration-only data; split-conformal sets; Wilson risk/coverage certificates; OOD and drift monitors; versioned model manifests; a fail-closed C++ reliability gate; causal checksum requirements; conservative propensity-overlap and effective-sample-size policy evaluation; SQLite learned-state persistence with validation; and a measured reliability-budget compiler. Every gate is downgrade-only, and none authorizes action execution. External multi-device calibration, locked-data certificates, and signed native model artifacts remain required before any production certification claim.
+### Phase 3 - Secure Production Runtime, Trusted Actuation, Native Inference, Dashboard, and Integrations
+
+Status: IN PROGRESS (2026-07-13)
+
+Implemented in this pass:
+
+- `SecureActuation.*`: strict bounded/versioned typed message parsing, replay protection, a three-key proof validator, independent veto-only guardian, canary outcome logic that treats neutral outcomes as rollback, and lease restoration.
+- `NativeModelBundle.*`: bounded manifest parsing, SHA-256 integrity checks, feature schema/dimension validation, and Windows Authenticode verification. Unsigned or modified bundles are rejected.
+- The default runtime configuration is now `NATIVE_BUNDLE`; this mode never launches Python/joblib or reads polled JSON and fails closed to monitor-only when a verified native bundle is unavailable.
+
+Still required for Phase 3 completion:
+
+- Installable minimal Windows service with restrictive ACL-backed local named pipe, authenticated client identity, durable recovery journal, and watchdog recovery.
+- Actual bounded native inference engine and signed artifact production pipeline; the validator deliberately rejects the currently unsigned legacy model.
+- Dashboard command handlers connected to the service protocol, explicit manual-canary confirmation, active lease/rollback controls, and Phase 3 reliability/evidence views.
+- Full end-to-end connection of browser, BITS, and prefetch actions through proof, guardian, canary, passport, recovery, and UI history.
+
+Automatic mode remains disabled. Manual canary is not enabled.

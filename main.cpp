@@ -47,6 +47,7 @@
 #include "SafetyPolicy.h"
 #include "MetricsStorage.h"
 #include "ModernDashboardUI.h"
+#include "NativeModelBundle.h"
 #include "ObserverEffectGovernor.h"
 #include "SystemMetrics.h"
 
@@ -612,6 +613,9 @@ ModelPrediction ReadModelPredictionWithRetry() {
     return ModelPrediction{};
 }
 
+bool UseNativeBundleInference() {
+    return ToUpperAscii(g_config.GetString("AI_INFERENCE_MODE", "SERVICE")) == "NATIVE_BUNDLE";
+}
 bool UsePersistentInferenceService() {
     string mode = ToUpperAscii(g_config.GetString("AI_INFERENCE_MODE", "SERVICE"));
     return mode == "SERVICE" || mode == "PERSISTENT_SERVICE";
@@ -1121,23 +1125,23 @@ void MonitorThread(HWND hwnd) {
             const auto predictionStart = steady_clock::now();
             predictionPath = "attempted";
 
-            if (preferInferenceService) {
-                if (StartInferenceService()) {
-                    predictionPath = "service";
-                    modelPrediction = ReadServicePrediction();
-                    if (modelPrediction.risk < 0.0) {
-                        predictionFailure = "service did not return a usable prediction";
-                    }
-                } else {
-                    predictionFailure = "inference service unavailable";
+            if (UseNativeBundleInference()) {
+                // A missing or invalid signed native bundle must fail closed. Python/joblib
+                // and polled JSON are research-only and never run in this production mode.
+                predictionPath = "native_bundle";
+                predictionFailure = "verified native bundle unavailable; monitor-only";
+            } else {
+                if (preferInferenceService) {
+                    if (StartInferenceService()) {
+                        predictionPath = "service";
+                        modelPrediction = ReadServicePrediction();
+                        if (modelPrediction.risk < 0.0) predictionFailure = "service did not return a usable prediction";
+                    } else predictionFailure = "inference service unavailable";
                 }
-            }
-
-            if (modelPrediction.risk < 0.0 && (!preferInferenceService || allowProcessFallback)) {
-                predictionPath = "process";
-                modelPrediction = ReadModelPredictionWithRetry();
-                if (modelPrediction.risk < 0.0 && predictionFailure == "none") {
-                    predictionFailure = "one-shot prediction failed";
+                if (modelPrediction.risk < 0.0 && (!preferInferenceService || allowProcessFallback)) {
+                    predictionPath = "process";
+                    modelPrediction = ReadModelPredictionWithRetry();
+                    if (modelPrediction.risk < 0.0 && predictionFailure == "none") predictionFailure = "one-shot prediction failed";
                 }
             }
 
