@@ -4,6 +4,8 @@ PredictiveAutoHeal is a Windows-first system observability dashboard that monito
 
 The current version focuses on safe predictive monitoring: it detects resource pressure, explains risk, and shows auto-heal readiness. Destructive recovery actions are intentionally disabled until the model is reliable enough for safe automation.
 
+> **Current release status: NOT_CERTIFIED.** Automatic action remains disabled. The repository has local safety and validation evidence, but no independent locked certification campaign, deployed signed native model bundle, or cross-device hardware/soak evidence.
+
 ## Highlights
 
 - Native C++20 / Win32 desktop dashboard

@@ -29,6 +29,7 @@
 #include "CooperativeIntegrations.h"
 #include "AppConfig.h"
 #include "DecisionEngine.h"
+#include "DashboardCommandController.h"
 #include "EpisodeTelemetryStore.h"
 #include "HealingVerifier.h"
 #include "ImpactLearning.h"
@@ -119,6 +120,8 @@ string g_decisionRootCauseDetail = "No dominant pressure source";
 string g_actionTarget = "system";
 string g_safetyGate = "OBSERVE_ONLY";
 string g_blockedReason = "Auto-heal execution disabled";
+string g_manualCanaryStatus = "Manual canary unavailable";
+DashboardCommandController g_dashboardCommandController;
 double g_actionConfidence = 0.0;
 double g_expectedOptimizationGain = 0.0;
 int g_cooldownRemainingSeconds = 0;
@@ -1718,6 +1721,43 @@ void MonitorThread(HWND hwnd) {
     }
 }
 
+string DashboardRuntimeMode(RuntimeMode mode) {
+    switch (mode) {
+    case RuntimeMode::MonitorOnly: return "MONITOR_ONLY";
+    case RuntimeMode::RecommendationOnly: return "RECOMMENDATION_ONLY";
+    case RuntimeMode::ManualCanary: return "MANUAL_CANARY";
+    case RuntimeMode::RestrictedAutomatic: return "RESTRICTED_AUTOMATIC";
+    case RuntimeMode::CertifiedAutomatic: return "CERTIFIED_AUTOMATIC";
+    }
+    return "MONITOR_ONLY";
+}
+
+void RequestDashboardManualCanary(HWND hwnd) {
+    ManualCanaryCommand command;
+    {
+        lock_guard<mutex> lock(g_dataMutex);
+        command.runtimeMode = DashboardRuntimeMode(g_runtimeMode);
+        command.certificateId = "NOT_CERTIFIED";
+        command.target = g_actionTarget;
+        command.action = g_recommendedAction;
+        command.evidenceSummary = g_decisionRootCauseDetail;
+        command.durationMs = 1000;
+        command.actionExecutionEnabled = g_config.GetInt("ACTION_EXECUTION_ENABLED", 0) != 0;
+        command.globalDisable = g_config.GetInt("ACTION_GLOBAL_DISABLE", 1) != 0;
+        command.proofReferenceAvailable = false;
+    }
+    const DashboardCommandDecision decision = g_dashboardCommandController.PrepareManualCanary(command);
+    {
+        lock_guard<mutex> lock(g_dataMutex);
+        g_manualCanaryStatus = decision.reason;
+    }
+    AppendRuntimeLog("dashboard_manual_canary_request", {
+        {"target", command.target}, {"action", command.action}, {"duration_ms", to_string(command.durationMs)},
+        {"result", decision.reason}, {"submitted_to_actuator", decision.maySubmitToActuator ? "1" : "0"},
+    });
+    MessageBoxA(hwnd, ("Manual canary request: " + decision.reason + "\n\nNo action was executed.").c_str(),
+                "Aegis-99 manual canary", MB_OK | MB_ICONINFORMATION);
+}
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (g_taskbarCreatedMessage != 0 && uMsg == g_taskbarCreatedMessage) {
         g_trayIconInstalled = false;

@@ -31,14 +31,14 @@ try {
         ctest --test-dir build -C $Configuration --output-on-failure
     }
     Invoke-Checked -Name "Python model and benchmark tests" -Command {
-        python -m unittest test_model_contract.py test_benchmark_lab.py test_dataset_contract.py test_training_safety.py test_grouped_temporal_split.py test_episode_builder.py test_evaluation_pipeline.py test_runtime_performance_summary.py test_phase2_reliability.py
+        python -m unittest test_model_contract.py test_benchmark_lab.py test_dataset_contract.py test_training_safety.py test_grouped_temporal_split.py test_episode_builder.py test_evaluation_pipeline.py test_runtime_performance_summary.py test_phase2_reliability.py test_exact_binomial_certificate.py test_phase4_certification.py test_workload_lab.py
     }
     Invoke-Checked -Name "Whitespace/static diff check" -Command { git diff --check }
 
     if (-not $SkipPackaging) {
         $packageOutput = Join-Path $repositoryRoot "build\package-dry-run"
         Invoke-Checked -Name "Portable package dry run" -Command {
-            & .\package_release.ps1 -Configuration $Configuration -OutputDir $packageOutput -BuildParallelism $BuildParallelism
+            & .\package_release.ps1 -Configuration $Configuration -OutputDir $packageOutput -BuildParallelism $BuildParallelism -DevelopmentDryRun
         }
     }
 

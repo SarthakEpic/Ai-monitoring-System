@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from .grouped_temporal_split import LeakageError
+try:
+    from .grouped_temporal_split import LeakageError
+except ImportError:  # Supports direct CLI execution from the repository root.
+    from grouped_temporal_split import LeakageError
 
 
 @dataclass(frozen=True)

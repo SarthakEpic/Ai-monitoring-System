@@ -2,17 +2,15 @@
 
 ## Local implementation evidence
 
-- The `ReliabilityCascade` routes stable telemetry through a cheap sentinel and routes possible events to specialist and temporal analysis. It cannot accept a recommendation from raw confidence alone.
-- `python/probability_calibration.py`, `conformal_runtime.py`, `selective_risk_certificate.py`, `ood_ensemble.py`, `drift_monitor.py`, `risk_coverage_report.py`, and `model_registry.py` provide calibration-only fitting, predictive sets, finite-sample bounds, OOD/drift downgrades, reports, and artifact hashes.
-- `ReliabilityGate` is fail-closed for missing/expired/mismatched certificates, unsupported envelopes, bad data quality, OOD, drift, error budgets, or coverage lower bounds.
-- `CausalChecksum` requires a measurable mechanism and complete telemetry before a reversible recommendation can be supported.
-- `OfflinePolicyEvaluator` requires observed outcomes, valid logging propensities, adequate effective sample size, causal support, and a positive lower confidence benefit. `LearningJournal` restores validated matrices, reward vectors, and observation counts from SQLite.
-- `ReliabilityBudgetCompiler` accepts only measured component upper bounds that fit the global error budget.
+- `ReliabilityCascade` routes stable telemetry through a cheap sentinel and routes possible events to specialist and temporal analysis; raw confidence cannot authorize a recommendation.
+- Calibration, conformal prediction, OOD/drift monitoring, risk-coverage reports, and artifact hashes are implemented in the Phase 2 Python modules.
+- `selective_risk_certificate.py` now uses one-sided exact Clopper-Pearson bounds for autonomy/certification decisions; Wilson-style approximations are not used for the release gate.
+- `ReliabilityGate`, `CausalChecksum`, `OfflinePolicyEvaluator`, persisted learning state, and `ReliabilityBudgetCompiler` fail closed for absent or invalid reliability evidence.
 
 ## Deliberate non-claims
 
-This phase does **not** issue a production certificate, enable auto-healing, claim multi-device generalization, or replace the legacy runtime Python model with signed native inference. Those require locked external evidence and later phases.
+Phase 2 does not issue a production certificate, enable auto-healing, claim multi-device generalization, or replace runtime inference with a deployed signed native ONNX bundle. Those require later-phase external evidence.
 
 ## Required verification
 
-Run `./tools/run_all_checks.ps1 -Configuration Debug -BuildParallelism 1`. The suite includes cascade, causal checksum, reliability gate, budget, persisted learning state, and Python calibration/OOD/drift tests.
+Run `./tools/run_all_checks.ps1 -Configuration Debug -BuildParallelism 1`. It includes exact-binomial, calibration/OOD/drift, cascade, causal, budget, persistence, and Phase 4 certification-contract tests.

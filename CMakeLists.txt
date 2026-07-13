@@ -11,7 +11,6 @@ add_executable(PredictiveAutoHeal
     AdaptiveSampling.cpp
     MonitoringScheduler.cpp
     ModernDashboardUI.cpp
-    MonitoringScheduler.cpp
     ObserverEffectGovernor.cpp
     RuntimeFoundation.cpp
     RuntimeOrchestrator.cpp
@@ -31,6 +30,7 @@ add_executable(PredictiveAutoHeal
     EpisodeTelemetryStore.cpp
     CooperativeIntegrations.cpp
     DecisionEngine.cpp
+    DashboardCommandController.cpp
     HealingVerifier.cpp
     ImpactLearning.cpp
     InferenceProtocol.cpp
@@ -54,6 +54,16 @@ add_executable(PredictiveAutoHeal
     sqlite3.c
 )
 
+add_executable(Aegis99ActuatorService
+    ActuatorServiceMain.cpp
+    SecureActuation.cpp
+    ProofLedger.cpp
+    ReliabilityGate.cpp
+    RuntimeFoundation.cpp
+    sqlite3.c
+)
+target_compile_definitions(Aegis99ActuatorService PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(Aegis99ActuatorService PRIVATE Advapi32 Bcrypt)
 add_executable(PredictiveAutoHealBrowserHost BrowserNativeHost.cpp)
 target_compile_definitions(PredictiveAutoHealBrowserHost PRIVATE UNICODE _UNICODE NOMINMAX)
 add_dependencies(PredictiveAutoHeal PredictiveAutoHealBrowserHost)
@@ -170,6 +180,12 @@ if(BUILD_TESTING)
     )
     target_compile_definitions(DecisionEngineTests PRIVATE UNICODE _UNICODE NOMINMAX)
     add_test(NAME DecisionEngineTests COMMAND DecisionEngineTests)
+    add_executable(DashboardCommandControllerTests
+        DashboardCommandControllerTests.cpp
+        DashboardCommandController.cpp
+    )
+    target_compile_definitions(DashboardCommandControllerTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME DashboardCommandControllerTests COMMAND DashboardCommandControllerTests)
     add_executable(ReliabilityGateTests
         ReliabilityGateTests.cpp
         ReliabilityGate.cpp
@@ -199,11 +215,21 @@ if(BUILD_TESTING)
     add_executable(SecureActuationTests
         SecureActuationTests.cpp
         SecureActuation.cpp
+        ProofLedger.cpp
         ReliabilityGate.cpp
         RuntimeFoundation.cpp
+        sqlite3.c
     )
     target_compile_definitions(SecureActuationTests PRIVATE UNICODE _UNICODE NOMINMAX)
     add_test(NAME SecureActuationTests COMMAND SecureActuationTests)
+    add_executable(SecureProtocolFuzzTests
+        SecureProtocolFuzzTests.cpp
+        SecureActuation.cpp
+        ReliabilityGate.cpp
+        RuntimeFoundation.cpp
+    )
+    target_compile_definitions(SecureProtocolFuzzTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME SecureProtocolFuzzTests COMMAND SecureProtocolFuzzTests)
     add_executable(NativeModelBundleTests
         NativeModelBundleTests.cpp
         NativeModelBundle.cpp

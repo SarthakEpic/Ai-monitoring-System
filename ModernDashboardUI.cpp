@@ -878,3 +878,21 @@ DashboardView HitTestDashboardNavigation(const RECT& client, int x, int y, Dashb
     return current;
 }
 
+
+
+bool HitTestDashboardManualCanary(const RECT& client, int x, int y, DashboardView current) {
+    if (current != DashboardView::Overview) return false;
+    const Layout layout = BuildLayout(client);
+    const RECT area = layout.content;
+    const int width = static_cast<int>(area.right - area.left);
+    const int height = static_cast<int>(area.bottom - area.top);
+    const int summaryHeight = height < 640 ? 54 : 60;
+    const int metricHeight = height < 640 ? 92 : 108;
+    const int bodyTop = area.top + summaryHeight + layout.gap + metricHeight + layout.gap;
+    const int rightWidth = max(300, min(365, width / 3));
+    const int leftRight = area.right - rightWidth - layout.gap;
+    const RECT opportunity{leftRight + layout.gap, bodyTop, area.right, area.bottom};
+    const int footerTop = max(static_cast<int>(opportunity.top) + 420, static_cast<int>(opportunity.bottom) - 70);
+    const RECT button{opportunity.left + 14, footerTop, opportunity.right - 14, footerTop + 27};
+    return x >= button.left && x <= button.right && y >= button.top && y <= button.bottom;
+}

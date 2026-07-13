@@ -103,6 +103,7 @@ struct DashboardUiState {
     std::string performanceMode = "LOW END";
     std::string policyMode = "SHADOW";
     std::string modelVersion = "unknown";
+    std::string manualCanaryStatus = "Manual canary unavailable";
 };
 
 void DrawModernDashboard(
@@ -114,4 +115,5 @@ void DrawModernDashboard(
 );
 
 DashboardView HitTestDashboardNavigation(const RECT& client, int x, int y, DashboardView current);
+bool HitTestDashboardManualCanary(const RECT& client, int x, int y, DashboardView current);
 

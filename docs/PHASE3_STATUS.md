@@ -2,12 +2,15 @@
 
 ## Enforced now
 
-- Secure requests have a fixed protocol version, bounded fields, allowlisted command, request/session ID, monotonic sequence, expiry, and replay rejection.
-- A proof requires accepted reliability evidence, positive benefit lower bound, limited harm upper bound, mechanism and guardian evidence, deterministic safety, complete rollback state, exact target identity, explicit approval, and a bounded lease.
-- Canary results commit only after valid measurement, identity stability, no foreground/protected transition, observed mechanism, sufficient primary benefit, and bounded harm. Neutral or invalid canaries roll back.
-- Native bundle verification rejects altered, oversized, schema-incompatible, wrong-dimension, unsupported-format, and unsigned production model bundles.
-- `NATIVE_BUNDLE` mode does not launch legacy Python/joblib inference and cannot fall back to a one-shot Python process.
+- Requests use a bounded, versioned, local-only named-pipe protocol with expiry and replay rejection.
+- Proof, guardian, trusted safety, lease, and canary primitives reject stale, unsafe, neutral, foreground, or protected cases.
+- `Aegis99ActuatorService` is a real Windows service host and `install_actuator_service.ps1` registers it as `LocalService`, never `LocalSystem`.
+- Native bundle validation rejects altered, oversized, schema-incompatible, unsupported, and unsigned production bundles.
+- `NATIVE_BUNDLE` mode blocks the legacy Python/joblib fallback.
+- The overview now exposes a hit-tested manual-canary request control. DashboardCommandController requires ManualCanary mode, a certificate, exact target/action/evidence/duration, and a trusted proof reference; it records the exact fail-closed reason when any prerequisite is absent.
 
-## Not yet a completion claim
+## Deliberate fail-closed boundary
 
-The repository does not yet have an installable least-privilege service, a deployed signed native model bundle, or the required dashboard/service/integration end-to-end flows. Therefore Phase 3 remains **IN PROGRESS**, ManualCanary remains disabled, and the product remains **NOT_CERTIFIED**.
+The installed service currently rejects every mutation with `trusted_proof_reference_not_connected`: no dashboard/client path can yet supply a service-owned, fully revalidated proof and measured canary transaction. This is intentional until the complete trusted proof ledger, dashboard approval handler, native inference runtime, and integration end-to-end flows exist.
+
+Phase 3 is therefore **IN PROGRESS**. ManualCanary and automatic action remain disabled, and the product remains **NOT_CERTIFIED**.

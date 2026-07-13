@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Aegis99 Proof-Carrying Action",
+  "type": "object",
+  "required": ["requestId", "modelId", "certificateId", "canaryDurationMs", "maximumLeaseMs"],
+  "properties": {
+    "requestId": {"type": "string", "maxLength": 128},
+    "modelId": {"type": "string", "maxLength": 128},
+    "certificateId": {"type": "string", "maxLength": 128},
+    "canaryDurationMs": {"type": "integer", "minimum": 100, "maximum": 30000},
+    "maximumLeaseMs": {"type": "integer", "minimum": 100, "maximum": 300000}
+  },
+  "additionalProperties": false
+}
