@@ -26,6 +26,7 @@ add_executable(PredictiveAutoHeal
     BackgroundAgent.cpp
     BenchmarkProof.cpp
     BrowserIntegrationBridge.cpp
+    CausalChecksum.cpp
     DatabaseMigrations.cpp
     EpisodeTelemetryStore.cpp
     CooperativeIntegrations.cpp
@@ -39,6 +40,8 @@ add_executable(PredictiveAutoHeal
     PerformanceIntelligence.cpp
     RuntimeHealth.cpp
     ReliabilityGate.cpp
+    ReliabilityBudget.cpp
+    ReliabilityCascade.cpp
     SafeOnlinePolicy.cpp
     SafetyPolicy.cpp
     ProcessClassifier.cpp
@@ -173,7 +176,25 @@ if(BUILD_TESTING)
     )
     target_compile_definitions(ReliabilityGateTests PRIVATE UNICODE _UNICODE NOMINMAX)
     add_test(NAME ReliabilityGateTests COMMAND ReliabilityGateTests)
-
+    add_executable(CausalChecksumTests
+        CausalChecksumTests.cpp
+        CausalChecksum.cpp
+    )
+    target_compile_definitions(CausalChecksumTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME CausalChecksumTests COMMAND CausalChecksumTests)
+    add_executable(ReliabilityBudgetTests
+        ReliabilityBudgetTests.cpp
+        ReliabilityBudget.cpp
+    )
+    target_compile_definitions(ReliabilityBudgetTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME ReliabilityBudgetTests COMMAND ReliabilityBudgetTests)
+    add_executable(ReliabilityCascadeTests
+        ReliabilityCascadeTests.cpp
+        ReliabilityCascade.cpp
+        CausalChecksum.cpp
+    )
+    target_compile_definitions(ReliabilityCascadeTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME ReliabilityCascadeTests COMMAND ReliabilityCascadeTests)
     add_executable(InferenceProtocolTests
         InferenceProtocolTests.cpp
         InferenceProtocol.cpp

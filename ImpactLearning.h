@@ -57,6 +57,8 @@ struct LoggedPolicyOutcome {
     double reward = 0.0;
     double baselineReward = 0.0;
     double loggingPropensity = 1.0;
+    bool causalSupport = false;
+    bool observedOutcome = false;
 };
 
 struct OfflineEvaluationResult {
@@ -66,11 +68,26 @@ struct OfflineEvaluationResult {
     double baselineReward = 0.0;
     double standardError = 0.0;
     double lowerConfidenceBenefit = 0.0;
+    double effectiveSampleSize = 0.0;
+    bool overlapAdequate = false;
+    bool causalEvidenceAdequate = false;
     bool sufficientEvidence = false;
     bool promotionEligible = false;
     std::string reason;
 };
 
+struct ImpactModelStateEntry {
+    ResourceActionType action = ResourceActionType::None;
+    std::vector<std::vector<double>> covariance;
+    std::vector<double> rewardVector;
+    int observations = 0;
+};
+
+struct ImpactModelState {
+    double ridge = 1.0;
+    double explorationScale = 1.25;
+    std::vector<ImpactModelStateEntry> entries;
+};
 struct PrivateFederatedUpdate {
     std::vector<double> protectedDelta;
     double originalNorm = 0.0;
@@ -99,6 +116,8 @@ public:
     explicit ContextualImpactModel(double ridge = 1.0, double explorationScale = 1.25);
     ImpactPrediction Predict(ResourceActionType action, const WorkloadContextFeatures& context) const;
     bool Update(ResourceActionType action, const WorkloadContextFeatures& context, double measuredReward);
+    ImpactModelState ExportState() const;
+    bool ImportState(const ImpactModelState& state);
 
 private:
     struct ActionModel {
@@ -166,6 +185,8 @@ public:
     bool SaveShadowDecision(const ShadowPolicyDecision& decision, const WorkloadContextFeatures& context, std::string& error);
     bool SaveReward(const std::string& transactionId, ResourceActionType action, const ActionImpactResult& outcome, std::string& error);
     bool SaveFederatedAudit(const PrivateFederatedUpdate& update, std::string& error);
+    bool SaveImpactModelState(const std::string& modelId, const ImpactModelState& state, std::string& error);
+    bool LoadImpactModelState(const std::string& modelId, ImpactModelState& state, std::string& error);
 
 private:
     bool EnsureSchema(std::string& error);

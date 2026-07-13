@@ -248,6 +248,6 @@ Evidence: `docs/PHASE1_ACCEPTANCE.md` records passing local implementation gates
 
 ### Phase 2 - Reliability Intelligence
 
-Status: IN PROGRESS (2026-07-13)
+Status: COMPLETE (LOCAL IMPLEMENTATION; EXTERNAL VALIDATION PENDING) (2026-07-13)
 
-Starting point: the existing contextual impact model and shadow policy are retained. The first Phase 2 implementation focus is a fail-closed reliability gate that combines certificate validity, supported envelope, data quality, OOD signals, and drift before a model/policy result can be accepted.
+Completed local implementation: a staged sentinel/specialist/temporal cascade with an independent failure critic; calibrated probability selection on calibration-only data; split-conformal sets; Wilson risk/coverage certificates; OOD and drift monitors; versioned model manifests; a fail-closed C++ reliability gate; causal checksum requirements; conservative propensity-overlap and effective-sample-size policy evaluation; SQLite learned-state persistence with validation; and a measured reliability-budget compiler. Every gate is downgrade-only, and none authorizes action execution. External multi-device calibration, locked-data certificates, and signed native model artifacts remain required before any production certification claim.

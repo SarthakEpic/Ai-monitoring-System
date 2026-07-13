@@ -76,7 +76,9 @@ void VerifyOfflineEvaluation() {
             ResourceActionType::EnableEcoQos,
             0.5,
             0.0,
-            1.0
+            1.0,
+            true,
+            true
         });
     }
 
@@ -92,6 +94,24 @@ void VerifyOfflineEvaluation() {
     );
 }
 
+void VerifyStateRoundTripAndConservativeRejection() {
+    ContextualImpactModel original;
+    for (int i = 0; i < 30; ++i) original.Update(ResourceActionType::EnableEcoQos, Context(), 0.6);
+    const auto before = original.Predict(ResourceActionType::EnableEcoQos, Context());
+    ContextualImpactModel restored;
+    Require(restored.ImportState(original.ExportState()), "valid model state did not restore");
+    const auto after = restored.Predict(ResourceActionType::EnableEcoQos, Context());
+    Require(abs(before.expectedReward - after.expectedReward) < 1e-9, "restored model changed prediction");
+    Require(before.observations == after.observations, "restored observation count changed");
+
+    vector<LoggedPolicyOutcome> poorOverlap;
+    for (int i = 0; i < 30; ++i) poorOverlap.push_back({ResourceActionType::EnableEcoQos, ResourceActionType::EnableEcoQos, 0.8, 0.0, i == 0 ? 0.01 : 1.0, true, true});
+    const auto rejected = OfflinePolicyEvaluator().Evaluate(poorOverlap);
+    Require(!rejected.promotionEligible, "poor propensity overlap was promoted");
+    for (auto& entry : poorOverlap) { entry.loggingPropensity = 0.5; entry.causalSupport = false; }
+    const auto causalRejected = OfflinePolicyEvaluator().Evaluate(poorOverlap);
+    Require(!causalRejected.promotionEligible, "missing causal evidence was promoted");
+}
 void VerifyPromotionJournal() {
     const filesystem::path database = filesystem::temp_directory_path() /
         ("impact_promotion_" + to_string(GetCurrentProcessId()) + ".db");
@@ -137,6 +157,14 @@ void VerifyPromotionJournal() {
         "startup registration demoted policy"
     );
 
+    ContextualImpactModel original;
+    for (int i = 0; i < 25; ++i) original.Update(ResourceActionType::EnableEcoQos, Context(), 0.5);
+    Require(journal.SaveImpactModelState("test-impact-model", original.ExportState(), error), "impact state did not save: " + error);
+    ImpactModelState restoredState;
+    Require(journal.LoadImpactModelState("test-impact-model", restoredState, error), "impact state did not load: " + error);
+    ContextualImpactModel restored;
+    Require(restored.ImportState(restoredState), "loaded impact state was invalid");
+    Require(restored.Predict(ResourceActionType::EnableEcoQos, Context()).observations == 25, "journal state lost observations");
     journal.Close();
     filesystem::remove(database);
 }
@@ -165,6 +193,7 @@ int main() {
         VerifyLearningAndUncertainty();
         VerifyShadowSafety();
         VerifyOfflineEvaluation();
+        VerifyStateRoundTripAndConservativeRejection();
         VerifyPromotionJournal();
         VerifyPrivateUpdate();
         cout << "ImpactLearningTests passed\n";

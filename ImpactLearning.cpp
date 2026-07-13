@@ -38,6 +38,37 @@ string SerializeFeatures(const vector<double>& values) {
     return stream.str();
 }
 
+
+bool ParseFeatures(const string& text, vector<double>& values) {
+    values.clear();
+    istringstream stream(text);
+    string token;
+    while (getline(stream, token, ',')) {
+        try { values.push_back(stod(token)); }
+        catch (...) { return false; }
+    }
+    return !values.empty();
+}
+string SerializeMatrix(const vector<vector<double>>& matrix) {
+    ostringstream stream;
+    for (size_t row = 0; row < matrix.size(); ++row) {
+        if (row) stream << '|';
+        stream << SerializeFeatures(matrix[row]);
+    }
+    return stream.str();
+}
+
+bool ParseMatrix(const string& text, vector<vector<double>>& matrix) {
+    matrix.clear();
+    istringstream stream(text);
+    string row;
+    while (getline(stream, row, '|')) {
+        vector<double> values;
+        if (!ParseFeatures(row, values)) return false;
+        matrix.push_back(move(values));
+    }
+    return !matrix.empty();
+}
 }  // namespace
 
 WorkloadContextFeatures WorkloadContextEncoder::Encode(
@@ -164,6 +195,37 @@ bool ContextualImpactModel::Update(ResourceActionType action, const WorkloadCont
     return true;
 }
 
+ImpactModelState ContextualImpactModel::ExportState() const {
+    lock_guard lock(mutex_);
+    ImpactModelState state;
+    state.ridge = ridge_;
+    state.explorationScale = explorationScale_;
+    for (const auto& [key, model] : models_) {
+        state.entries.push_back({static_cast<ResourceActionType>(key), model.covariance, model.rewardVector, model.observations});
+    }
+    return state;
+}
+
+bool ContextualImpactModel::ImportState(const ImpactModelState& state) {
+    const int dimension = WorkloadContextEncoder::Dimension();
+    if (!isfinite(state.ridge) || !isfinite(state.explorationScale) || state.ridge <= 0.0 || state.explorationScale < 0.0) return false;
+    unordered_map<int, ActionModel> restored;
+    for (const ImpactModelStateEntry& entry : state.entries) {
+        if (entry.action == ResourceActionType::None || entry.observations < 0 || entry.rewardVector.size() != dimension || entry.covariance.size() != dimension) return false;
+        for (int row = 0; row < dimension; ++row) {
+            if (entry.covariance[row].size() != dimension || !isfinite(entry.rewardVector[row])) return false;
+            for (int column = 0; column < dimension; ++column) {
+                if (!isfinite(entry.covariance[row][column]) || abs(entry.covariance[row][column] - entry.covariance[column][row]) > 1e-8) return false;
+            }
+        }
+        restored.emplace(ActionKey(entry.action), ActionModel{entry.covariance, entry.rewardVector, entry.observations});
+    }
+    lock_guard lock(mutex_);
+    ridge_ = state.ridge;
+    explorationScale_ = state.explorationScale;
+    models_ = move(restored);
+    return true;
+}
 ShadowPolicyDecision ShadowContextualPolicy::Select(
     const WorkloadContextFeatures& context,
     const vector<ImpactCandidate>& candidates,
@@ -213,32 +275,45 @@ OfflineEvaluationResult OfflinePolicyEvaluator::Evaluate(
     result.totalSamples = static_cast<int>(outcomes.size());
     vector<double> weightedRewards;
     vector<double> baselineRewards;
+    double sumWeights = 0.0;
+    double sumSquaredWeights = 0.0;
+    int causalObserved = 0;
+    bool invalidPropensity = false;
     for (const LoggedPolicyOutcome& outcome : outcomes) {
+        if (!isfinite(outcome.loggingPropensity) || outcome.loggingPropensity <= 0.0 || outcome.loggingPropensity > 1.0) {
+            invalidPropensity = true;
+            continue;
+        }
         baselineRewards.push_back(outcome.baselineReward);
-        if (outcome.loggedAction != outcome.candidatePolicyAction) continue;
-        const double propensity = Clamp(outcome.loggingPropensity, 0.05, 1.0);
-        weightedRewards.push_back(Clamp(outcome.reward / propensity, -10.0, 10.0));
+        if (outcome.loggedAction != outcome.candidatePolicyAction || !outcome.observedOutcome) continue;
+        const double weight = 1.0 / outcome.loggingPropensity;
+        weightedRewards.push_back(Clamp(outcome.reward * weight, -10.0, 10.0));
+        sumWeights += weight;
+        sumSquaredWeights += weight * weight;
+        if (outcome.causalSupport) ++causalObserved;
     }
     result.matchedSamples = static_cast<int>(weightedRewards.size());
     if (!baselineRewards.empty()) result.baselineReward = accumulate(baselineRewards.begin(), baselineRewards.end(), 0.0) / baselineRewards.size();
-    if (weightedRewards.empty()) {
-        result.reason = "no logged actions matched the candidate policy";
-        return result;
-    }
+    if (weightedRewards.empty()) { result.reason = invalidPropensity ? "invalid_logging_propensity" : "no_observed_actions_matched_candidate"; return result; }
     result.estimatedPolicyReward = accumulate(weightedRewards.begin(), weightedRewards.end(), 0.0) / weightedRewards.size();
     double variance = 0.0;
     for (double reward : weightedRewards) variance += pow(reward - result.estimatedPolicyReward, 2.0);
     if (weightedRewards.size() > 1) variance /= static_cast<double>(weightedRewards.size() - 1);
     result.standardError = sqrt(variance / weightedRewards.size());
     result.lowerConfidenceBenefit = (result.estimatedPolicyReward - result.baselineReward) - confidenceZ * result.standardError;
-    result.sufficientEvidence = result.matchedSamples >= minimumMatchedSamples;
+    result.effectiveSampleSize = sumSquaredWeights > 0.0 ? (sumWeights * sumWeights) / sumSquaredWeights : 0.0;
+    result.overlapAdequate = !invalidPropensity && result.effectiveSampleSize >= minimumMatchedSamples;
+    result.causalEvidenceAdequate = causalObserved == result.matchedSamples;
+    result.sufficientEvidence = result.matchedSamples >= minimumMatchedSamples && result.overlapAdequate && result.causalEvidenceAdequate;
     result.promotionEligible = result.sufficientEvidence && result.lowerConfidenceBenefit > 0.0;
-    result.reason = !result.sufficientEvidence ? "insufficient matched samples for offline promotion" :
-                    result.promotionEligible ? "candidate policy beats baseline at the requested confidence" :
-                    "candidate policy lower bound does not beat baseline";
+    result.reason = invalidPropensity ? "invalid_logging_propensity" :
+        !result.overlapAdequate ? "insufficient_effective_sample_size_or_overlap" :
+        !result.causalEvidenceAdequate ? "causal_checksum_missing_for_observed_outcomes" :
+        !result.sufficientEvidence ? "insufficient_matched_observed_samples" :
+        result.promotionEligible ? "causally_supported_policy_beats_baseline_at_requested_confidence" :
+        "candidate_policy_lower_bound_does_not_beat_baseline";
     return result;
 }
-
 string PrivacyPreservingUpdateBuilder::Sha256Token(const string& value) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
@@ -362,7 +437,12 @@ bool LearningJournal::EnsureSchema(string& error) {
         "id INTEGER PRIMARY KEY AUTOINCREMENT, created_at_ms INTEGER NOT NULL, "
         "original_norm REAL NOT NULL, clipped_norm REAL NOT NULL, clip_limit REAL NOT NULL, "
         "noise_stddev REAL NOT NULL, category_token TEXT NOT NULL, "
-        "contains_raw_identity INTEGER NOT NULL);"
+        "contains_raw_identity INTEGER NOT NULL);",
+
+        "CREATE TABLE IF NOT EXISTS impact_model_state_entries("
+        "model_id TEXT NOT NULL, action INTEGER NOT NULL, ridge REAL NOT NULL, exploration_scale REAL NOT NULL, "
+        "observations INTEGER NOT NULL, covariance TEXT NOT NULL, reward_vector TEXT NOT NULL, "
+        "saved_at_ms INTEGER NOT NULL, PRIMARY KEY(model_id, action));"
     };
 
     for (const char* statement : statements) {
@@ -597,4 +677,67 @@ bool LearningJournal::SaveFederatedAudit(
     }
     sqlite3_finalize(statement);
     return ok;
+}
+bool LearningJournal::SaveImpactModelState(const string& modelId, const ImpactModelState& state, string& error) {
+    if (modelId.empty()) { error = "model id is required"; return false; }
+    ContextualImpactModel validator;
+    if (!validator.ImportState(state)) { error = "invalid model state"; return false; }
+    lock_guard lock(mutex_);
+    if (!db_) { error = "journal not open"; return false; }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) { error = sqlite3_errmsg(db_); return false; }
+    bool ok = true;
+    sqlite3_stmt* clear = nullptr;
+    ok = sqlite3_prepare_v2(db_, "DELETE FROM impact_model_state_entries WHERE model_id=?;", -1, &clear, nullptr) == SQLITE_OK;
+    if (ok) { BindText(clear, 1, modelId); ok = sqlite3_step(clear) == SQLITE_DONE; }
+    if (clear) sqlite3_finalize(clear);
+    const char* sql = "INSERT INTO impact_model_state_entries VALUES(?,?,?,?,?,?,?,?);";
+    for (const ImpactModelStateEntry& entry : state.entries) {
+        sqlite3_stmt* statement = nullptr;
+        ok = ok && sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr) == SQLITE_OK;
+        if (ok) {
+            BindText(statement, 1, modelId);
+            sqlite3_bind_int(statement, 2, ActionKey(entry.action));
+            sqlite3_bind_double(statement, 3, state.ridge);
+            sqlite3_bind_double(statement, 4, state.explorationScale);
+            sqlite3_bind_int(statement, 5, entry.observations);
+            BindText(statement, 6, SerializeMatrix(entry.covariance));
+            BindText(statement, 7, SerializeFeatures(entry.rewardVector));
+            sqlite3_bind_int64(statement, 8, NowMs());
+            ok = sqlite3_step(statement) == SQLITE_DONE;
+        }
+        if (statement) sqlite3_finalize(statement);
+        if (!ok) break;
+    }
+    if (ok) ok = sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) == SQLITE_OK;
+    if (!ok) { error = sqlite3_errmsg(db_); sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr); }
+    return ok;
+}
+
+bool LearningJournal::LoadImpactModelState(const string& modelId, ImpactModelState& state, string& error) {
+    state = {};
+    lock_guard lock(mutex_);
+    if (!db_) { error = "journal not open"; return false; }
+    sqlite3_stmt* statement = nullptr;
+    const char* sql = "SELECT action,ridge,exploration_scale,observations,covariance,reward_vector FROM impact_model_state_entries WHERE model_id=? ORDER BY action;";
+    if (sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr) != SQLITE_OK) { error = sqlite3_errmsg(db_); return false; }
+    BindText(statement, 1, modelId);
+    bool found = false;
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        ImpactModelStateEntry entry;
+        entry.action = static_cast<ResourceActionType>(sqlite3_column_int(statement, 0));
+        state.ridge = sqlite3_column_double(statement, 1);
+        state.explorationScale = sqlite3_column_double(statement, 2);
+        entry.observations = sqlite3_column_int(statement, 3);
+        const auto* covariance = reinterpret_cast<const char*>(sqlite3_column_text(statement, 4));
+        const auto* reward = reinterpret_cast<const char*>(sqlite3_column_text(statement, 5));
+        if (!covariance || !reward || !ParseMatrix(covariance, entry.covariance) || !ParseFeatures(reward, entry.rewardVector)) { sqlite3_finalize(statement); error = "stored model state is malformed"; return false; }
+        state.entries.push_back(move(entry));
+        found = true;
+    }
+    if (sqlite3_errcode(db_) != SQLITE_DONE) { error = sqlite3_errmsg(db_); sqlite3_finalize(statement); return false; }
+    sqlite3_finalize(statement);
+    if (!found) { error = "model state not found"; return false; }
+    ContextualImpactModel validator;
+    if (!validator.ImportState(state)) { error = "stored model state failed validation"; return false; }
+    return true;
 }
