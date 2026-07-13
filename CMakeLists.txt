@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set_source_files_properties(sqlite3.c PROPERTIES LANGUAGE C COMPILE_OPTIONS "/W0")
 
 add_executable(PredictiveAutoHeal
+    AdaptiveSampling.cpp
     ModernDashboardUI.cpp
     RuntimeFoundation.cpp
     RuntimeOrchestrator.cpp
@@ -126,6 +127,13 @@ if(BUILD_TESTING)
     target_compile_definitions(RuntimeFoundationTests PRIVATE UNICODE _UNICODE NOMINMAX)
     add_test(NAME RuntimeFoundationTests COMMAND RuntimeFoundationTests)
 
+    add_executable(AdaptiveSamplingTests
+        AdaptiveSamplingTests.cpp
+        AdaptiveSampling.cpp
+    )
+    target_compile_definitions(AdaptiveSamplingTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME AdaptiveSamplingTests COMMAND AdaptiveSamplingTests)
+
     add_executable(ResourceOrchestratorTests
         ResourceOrchestratorTests.cpp
         ActionVerification.cpp
@@ -206,6 +214,7 @@ if(MSVC)
         PredictiveAutoHealBrowserHost
         StageAutopilotTests
         RuntimeFoundationTests
+        AdaptiveSamplingTests
         ResourceOrchestratorTests
         ActionVerificationTests
         PerformanceIntelligenceTests

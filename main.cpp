@@ -20,6 +20,7 @@
 #include <cctype>
 
 #include "AdaptiveBaseline.h"
+#include "AdaptiveSampling.h"
 #include "AutoHealPlanner.h"
 #include "BackgroundAgent.h"
 #include "BrowserIntegrationBridge.h"
@@ -855,6 +856,16 @@ void MonitorThread(HWND hwnd) {
     if (!collector.Initialize()) return;
     WorkloadPhaseDetector workloadDetector;
     QoeTelemetryCollector qoeCollector;
+    AdaptiveSamplingConfig qoeSamplingConfig;
+    qoeSamplingConfig.stableIntervalMs = std::max(1000, g_config.GetInt("QOE_STABLE_INTERVAL_MS", 5000));
+    qoeSamplingConfig.elevatedRiskIntervalMs = std::max(500, g_config.GetInt("QOE_ELEVATED_INTERVAL_MS", 1000));
+    qoeSamplingConfig.maximumFocusedBurstMs = std::max(
+        qoeSamplingConfig.elevatedRiskIntervalMs,
+        g_config.GetInt("QOE_MAX_FOCUSED_BURST_MS", 30000)
+    );
+    AdaptiveSamplingController qoeSampling(qoeSamplingConfig);
+    CollectorCostRegistry collectorCosts;
+    collectorCosts.Configure("qoe", SamplingTier::Tier2Focused, qoeSamplingConfig.elevatedRiskIntervalMs, qoeSamplingConfig.maximumFocusedBurstMs);
     PerformanceCriticalityEngine criticalityEngine;
     WorkloadProtectionEngine workloadProtectionEngine;
     IntegrationCapabilityDetector integrationCapabilityDetector;
@@ -951,6 +962,9 @@ void MonitorThread(HWND hwnd) {
     string lastLoggedAutopilotStatus;
     string lastLoggedAgentStatus;
     string lastLoggedProofStatus;
+    QoeTelemetrySample lastQoeSample;
+    bool hasQoeSample = false;
+    DWORD lastQoeForegroundPid = 0;
 
     while (g_running) {
         this_thread::sleep_for(seconds(1));
@@ -959,13 +973,39 @@ void MonitorThread(HWND hwnd) {
         SystemSnapshot snapshot = collector.Collect();
         snapshot.scenarioLabel = ReadScenarioLabel();
         WorkloadPhase workloadPhase = workloadDetector.Detect(snapshot);
+        const long long nowMs = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
         QoeTelemetrySample qoeSample;
+        bool qoeCaptured = false;
         if (qoeCollectorReady) {
-            qoeSample = qoeCollector.Capture(snapshot, workloadPhase);
-            workloadPhase = workloadDetector.Detect(snapshot, &qoeSample);
-            qoeSample.workload = workloadPhase;
+            AdaptiveSamplingInputs samplingInputs;
+            samplingInputs.elevatedRisk = snapshot.cpuUsage >= cpuTh || snapshot.memoryUsage >= memTh || snapshot.diskFree <= diskTh;
+            samplingInputs.severePressure = snapshot.cpuUsage >= 95.0 || snapshot.memoryUsage >= 95.0 || snapshot.diskFree <= 2.0;
+            samplingInputs.foregroundChanged = hasQoeSample && lastQoeForegroundPid != snapshot.intent.foregroundPid;
+            samplingInputs.dataInvalid = false;
+            samplingInputs.safetyEvent = samplingInputs.severePressure;
+            const AdaptiveSamplingDecision samplingDecision = qoeSampling.Next(nowMs, samplingInputs);
+            if (samplingDecision.capture) {
+                qoeSample = qoeCollector.Capture(snapshot, workloadPhase);
+                workloadPhase = workloadDetector.Detect(snapshot, &qoeSample);
+                qoeSample.workload = workloadPhase;
+                qoeSampling.RecordCapture(nowMs, qoeSample.withinOverheadBudget);
+                collectorCosts.Record("qoe", {nowMs, qoeSample.collectionOverheadMs, true});
+                lastQoeSample = qoeSample;
+                hasQoeSample = true;
+                lastQoeForegroundPid = snapshot.intent.foregroundPid;
+                qoeCaptured = true;
+            } else if (hasQoeSample) {
+                qoeSample = lastQoeSample;
+                qoeSample.availability += ",reused=1";
+            } else {
+                qoeSample.timestampMs = nowMs;
+                qoeSample.workload = workloadPhase;
+                qoeSample.foregroundPid = snapshot.intent.foregroundPid;
+                qoeSample.foregroundProcess = snapshot.intent.foregroundProcess;
+                qoeSample.availability = "awaiting_scheduled_initial_capture";
+            }
         } else {
-            qoeSample.timestampMs = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+            qoeSample.timestampMs = nowMs;
             qoeSample.workload = workloadPhase;
             qoeSample.foregroundPid = snapshot.intent.foregroundPid;
             qoeSample.foregroundProcess = snapshot.intent.foregroundProcess;
@@ -973,10 +1013,10 @@ void MonitorThread(HWND hwnd) {
         }
         PerformanceCriticalityGraph criticalityGraph = criticalityEngine.Build(snapshot, workloadPhase);
         WorkloadProtectionResult workloadProtection = workloadProtectionEngine.Build(snapshot, criticalityGraph, workloadPhase);
-        const int qoeWriteIntervalTicks = max(1, qoeSample.recommendedSampleIntervalMs / 1000);
-        if (qoeJournalReady && (g_tick % qoeWriteIntervalTicks) == 0) {
+        if (qoeJournalReady && qoeCaptured) {
             string qoeWriteError;
-            qoeJournal.Save(qoeSample, criticalityGraph, qoeWriteError);
+            const bool qoeSaved = qoeJournal.Save(qoeSample, criticalityGraph, qoeWriteError);
+            if (!qoeSaved) AppendRuntimeLog("qoe_storage_write_failed", {{"reason", qoeWriteError}});
             if ((g_tick % 300) == 0) qoeJournal.EnforceRetention(10000, 50000, qoeWriteError);
         }
 
