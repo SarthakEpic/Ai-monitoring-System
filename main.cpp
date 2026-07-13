@@ -32,6 +32,7 @@
 #include "LowEndAutopilot.h"
 #include "MetricsPipeline.h"
 #include "PerformanceIntelligence.h"
+#include "RuntimeFoundation.h"
 #include "RuntimeHealth.h"
 #include "SafeOnlinePolicy.h"
 #include "SafetyPolicy.h"
@@ -112,6 +113,7 @@ double g_expectedOptimizationGain = 0.0;
 int g_cooldownRemainingSeconds = 0;
 int g_candidateCount = 0;
 bool g_dryRun = true;
+RuntimeMode g_runtimeMode = RuntimeMode::MonitorOnly;
 RiskLevel g_decisionLevel = RiskLevel::Normal;
 bool g_safeToHeal = false;
 int g_modelFeatureCount = 0;
@@ -878,8 +880,10 @@ void MonitorThread(HWND hwnd) {
     auto nativeActionExecutor = make_shared<WindowsProcessActionExecutor>();
     ActionCoordinator actionCoordinator(nativeActionExecutor);
     SafeOnlinePolicyController onlinePolicy(actionCoordinator, impactModel, learningJournal);
+    const RuntimeMode runtimeMode = ParseRuntimeMode(g_config.GetString("RUNTIME_MODE", "MONITOR_ONLY"));
     OnlinePolicyConfig onlinePolicyConfig;
-    onlinePolicyConfig.onlineEnabled = g_config.GetInt("ONLINE_POLICY_ENABLED", 0) != 0 &&
+    onlinePolicyConfig.onlineEnabled = RuntimeModePermitsAutomaticActions(runtimeMode) &&
+        g_config.GetInt("ONLINE_POLICY_ENABLED", 0) != 0 &&
         g_config.GetInt("ACTION_EXECUTION_ENABLED", 0) != 0;
     bool persistedPolicyPromotion = false;
     string promotionLookupError;
@@ -923,7 +927,8 @@ void MonitorThread(HWND hwnd) {
     decisionThresholds.warningRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_WARNING_THRESHOLD", 55.0), 0.0, 100.0);
     decisionThresholds.criticalRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_CRITICAL_THRESHOLD", 75.0), decisionThresholds.warningRiskThreshold, 100.0);
     DecisionPolicy decisionPolicy;
-    decisionPolicy.autoHealEnabled = g_config.GetInt("AUTO_HEAL_ENABLED", 0) != 0;
+    decisionPolicy.autoHealEnabled = RuntimeModePermitsAutomaticActions(runtimeMode) &&
+        g_config.GetInt("AUTO_HEAL_ENABLED", 0) != 0;
     decisionPolicy.dryRun = g_config.GetInt("AUTO_HEAL_DRY_RUN", 1) != 0;
     decisionPolicy.safeMode = g_config.GetInt("SAFE_MODE", 1) != 0;
     decisionPolicy.cooldownSeconds = max(0, g_config.GetInt("AUTO_HEAL_COOLDOWN_SEC", 300));
@@ -1016,6 +1021,7 @@ void MonitorThread(HWND hwnd) {
             g_processGenome = snapshot.processGenome;
             g_qoeSample = qoeSample;
             g_criticalityGraph = criticalityGraph;
+            g_runtimeMode = runtimeMode;
 
             PushHistory(g_cpuHist, snapshot.cpuUsage, HISTORY_SIZE);
             PushHistory(g_memHist, snapshot.memoryUsage, HISTORY_SIZE);

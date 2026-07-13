@@ -9,6 +9,9 @@ set_source_files_properties(sqlite3.c PROPERTIES LANGUAGE C COMPILE_OPTIONS "/W0
 
 add_executable(PredictiveAutoHeal
     ModernDashboardUI.cpp
+    RuntimeFoundation.cpp
+    RuntimeOrchestrator.cpp
+    RuntimeStateStore.cpp
     main.cpp
     ActionVerification.cpp
     AdaptiveBaseline.cpp
@@ -114,6 +117,15 @@ if(BUILD_TESTING)
     target_compile_definitions(StageAutopilotTests PRIVATE UNICODE _UNICODE NOMINMAX)
     add_test(NAME StageAutopilotTests COMMAND StageAutopilotTests)
 
+    add_executable(RuntimeFoundationTests
+        RuntimeFoundationTests.cpp
+        RuntimeFoundation.cpp
+        RuntimeOrchestrator.cpp
+        RuntimeStateStore.cpp
+    )
+    target_compile_definitions(RuntimeFoundationTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    add_test(NAME RuntimeFoundationTests COMMAND RuntimeFoundationTests)
+
     add_executable(ResourceOrchestratorTests
         ResourceOrchestratorTests.cpp
         ActionVerification.cpp
@@ -193,6 +205,7 @@ if(MSVC)
         PredictiveAutoHeal
         PredictiveAutoHealBrowserHost
         StageAutopilotTests
+        RuntimeFoundationTests
         ResourceOrchestratorTests
         ActionVerificationTests
         PerformanceIntelligenceTests
