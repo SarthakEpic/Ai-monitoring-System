@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Aegis-99 Outcome Label v3",
+  "type": "object",
+  "required": ["schema_version", "monotonic_timestamp_ms", "wall_timestamp_utc", "device_id", "session_id", "episode_id", "windows_build_family", "hardware", "collector_health", "feature_source_versions", "provenance", "primary_outcome", "label_confidence", "qoe_evidence"],
+  "properties": {"schema_version": {"const": 3}, "primary_outcome": {"enum": ["USER_IMPACT_EVENT", "NO_USER_IMPACT_EVENT"]}, "label_confidence": {"type": "number", "minimum": 0, "maximum": 1}}
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Aegis-99 Telemetry Frame v3",
+  "type": "object",
+  "required": ["schema_version", "monotonic_timestamp_ms", "wall_timestamp_utc", "device_id", "session_id", "episode_id", "windows_build_family", "hardware", "foreground", "workload_phase", "resources", "normalized_resources", "collector_health", "feature_source_versions", "provenance"],
+  "properties": {
+    "schema_version": {"const": 3},
+    "monotonic_timestamp_ms": {"type": "integer", "minimum": 0},
+    "wall_timestamp_utc": {"type": "string"},
+    "device_id": {"type": "string", "description": "Pseudonymous identifier only"},
+    "session_id": {"type": "string"},
+    "episode_id": {"type": "string"},
+    "windows_build_family": {"type": "string"},
+    "hardware": {"type": "object", "required": ["cpu_core_tier", "ram_tier", "storage_type", "gpu_tier", "power_mode"]},
+    "foreground": {"type": "object", "required": ["app_family", "behavior_class"]},
+    "workload_phase": {"type": "string"},
+    "resources": {"type": "object", "required": ["cpu_percent", "memory_percent", "disk_free_percent"]},
+    "normalized_resources": {"type": "object", "required": ["cpu_robust_z", "memory_robust_z", "disk_robust_z"]},
+    "collector_health": {"type": "object"},
+    "feature_source_versions": {"type": "object"},
+    "provenance": {"enum": ["SYNTHETIC", "CONTROLLED_LAB", "WEAK_HEURISTIC", "MANUAL_REVIEW", "MEASURED_QOE"]}
+  }
+}

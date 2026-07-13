@@ -88,7 +88,7 @@ def _report_metric(report_dict: Dict[str, object], label: str, metric: str) -> f
 
 
 def _build_readiness_report(samples: int, class_distribution: Dict[str, int], report_dict: Dict[str, object]) -> Dict[str, object]:
-    blockers: List[str] = []
+    blockers: List[str] = ["Legacy train_model.py uses overlapping telemetry windows and resource-state labels; it is research-only until the v3 episode pipeline is used."]
     warnings: List[str] = []
 
     if samples < MIN_PRODUCTION_SAMPLES:
@@ -287,7 +287,7 @@ def main() -> int:
         "labels": LABELS,
         "readiness_status": readiness["status"],
         "baseline": baseline,
-        "validation": "chronological_holdout",
+        "validation": "legacy_row_level_chronological_holdout_research_only",
     }
 
     report: Dict[str, object] = {
@@ -301,7 +301,7 @@ def main() -> int:
         "heuristic_label_distribution": heuristic_label_distribution,
         "false_positive_count": false_positive_count,
         "false_negative_count": false_negative_count,
-        "validation": "chronological_holdout",
+        "validation": "legacy_row_level_chronological_holdout_research_only",
         "confusion_matrix": matrix,
         "classification_report": report_dict,
         "classification_report_text": report_text,
