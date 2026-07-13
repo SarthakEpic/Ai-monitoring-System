@@ -882,7 +882,7 @@ void MonitorThread(HWND hwnd) {
     SafeOnlinePolicyController onlinePolicy(actionCoordinator, impactModel, learningJournal);
     const RuntimeMode runtimeMode = ParseRuntimeMode(g_config.GetString("RUNTIME_MODE", "MONITOR_ONLY"));
     OnlinePolicyConfig onlinePolicyConfig;
-    onlinePolicyConfig.onlineEnabled = RuntimeModePermitsAutomaticActions(runtimeMode) &&
+    onlinePolicyConfig.onlineEnabled = RuntimeModePermitsAutomaticActions(runtimeMode, false) &&
         g_config.GetInt("ONLINE_POLICY_ENABLED", 0) != 0 &&
         g_config.GetInt("ACTION_EXECUTION_ENABLED", 0) != 0;
     bool persistedPolicyPromotion = false;
@@ -927,7 +927,7 @@ void MonitorThread(HWND hwnd) {
     decisionThresholds.warningRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_WARNING_THRESHOLD", 55.0), 0.0, 100.0);
     decisionThresholds.criticalRiskThreshold = ClampDouble(g_config.GetDouble("DECISION_CRITICAL_THRESHOLD", 75.0), decisionThresholds.warningRiskThreshold, 100.0);
     DecisionPolicy decisionPolicy;
-    decisionPolicy.autoHealEnabled = RuntimeModePermitsAutomaticActions(runtimeMode) &&
+    decisionPolicy.autoHealEnabled = RuntimeModePermitsAutomaticActions(runtimeMode, false) &&
         g_config.GetInt("AUTO_HEAL_ENABLED", 0) != 0;
     decisionPolicy.dryRun = g_config.GetInt("AUTO_HEAL_DRY_RUN", 1) != 0;
     decisionPolicy.safeMode = g_config.GetInt("SAFE_MODE", 1) != 0;

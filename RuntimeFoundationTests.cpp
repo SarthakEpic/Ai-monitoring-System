@@ -38,8 +38,9 @@ void TestModesAndSeverity() {
     assert(ParseRuntimeMode("monitor_only") == RuntimeMode::MonitorOnly);
     assert(ParseRuntimeMode("MANUAL_CANARY") == RuntimeMode::ManualCanary);
     assert(ParseRuntimeMode("invalid", RuntimeMode::RecommendationOnly) == RuntimeMode::RecommendationOnly);
-    assert(!RuntimeModePermitsAutomaticActions(RuntimeMode::RestrictedAutomatic));
-    assert(RuntimeModePermitsAutomaticActions(RuntimeMode::CertifiedAutomatic));
+    assert(!RuntimeModePermitsAutomaticActions(RuntimeMode::RestrictedAutomatic, true));
+    assert(!RuntimeModePermitsAutomaticActions(RuntimeMode::CertifiedAutomatic, false));
+    assert(RuntimeModePermitsAutomaticActions(RuntimeMode::CertifiedAutomatic, true));
     assert(SeverityForLabel(ParseModelStateLabel("RECOVERY")) == SeverityRank::Normal);
     assert(SeverityForLabel(ParseModelStateLabel("CRITICAL")) == SeverityRank::Critical);
 }

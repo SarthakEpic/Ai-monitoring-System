@@ -108,6 +108,6 @@ std::string_view ToString(SeverityRank severity) {
     return "NORMAL";
 }
 
-bool RuntimeModePermitsAutomaticActions(RuntimeMode mode) {
-    return mode == RuntimeMode::CertifiedAutomatic;
+bool RuntimeModePermitsAutomaticActions(RuntimeMode mode, bool certificateValid) {
+    return mode == RuntimeMode::CertifiedAutomatic && certificateValid;
 }

@@ -87,4 +87,4 @@ std::string_view ToString(ComponentHealthState state);
 ModelStateLabel ParseModelStateLabel(std::string_view value);
 SeverityRank SeverityForLabel(ModelStateLabel label);
 std::string_view ToString(SeverityRank severity);
-bool RuntimeModePermitsAutomaticActions(RuntimeMode mode);
+bool RuntimeModePermitsAutomaticActions(RuntimeMode mode, bool certificateValid);
